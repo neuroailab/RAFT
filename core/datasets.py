@@ -133,6 +133,12 @@ class FlyingChairs(FlowDataset):
                 self.flow_list += [ flows[i] ]
                 self.image_list += [ [images[2*i], images[2*i+1]] ]
 
+class TdwPlayroom(FlowDataset):
+    def __init__(self, aug_params=None, split='train', root='datasets/Tdw/data'):
+        super(TdwPlayroom, self).__init__(aug_params)
+
+        # images = sorted(glob(osp.join(root, 
+
 
 class FlyingThings3D(FlowDataset):
     def __init__(self, aug_params=None, root='datasets/FlyingThings3D', dstype='frames_cleanpass'):

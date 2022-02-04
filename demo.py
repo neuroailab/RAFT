@@ -13,9 +13,7 @@ from raft import RAFT
 from utils import flow_viz
 from utils.utils import InputPadder
 
-
-
-DEVICE = 'cuda'
+DEVICE = 'cpu'
 
 def load_image(imfile):
     img = np.array(Image.open(imfile)).astype(np.uint8)
@@ -41,7 +39,7 @@ def viz(img, flo):
 
 def demo(args):
     model = torch.nn.DataParallel(RAFT(args))
-    model.load_state_dict(torch.load(args.model))
+    model.load_state_dict(torch.load(args.model, map_location=torch.device(DEVICE)))
 
     model = model.module
     model.to(DEVICE)
