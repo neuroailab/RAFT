@@ -6,4 +6,7 @@ pytorch_env
 models
 build
 runs
+notebooks/.ipynb_checkbpoints
+checkpoints/*
+runs/*
 correlation.egg-info

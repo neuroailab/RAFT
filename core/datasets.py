@@ -1,9 +1,13 @@
 # Data loading based on https://github.com/NVIDIA/flownet2-pytorch
-
 import numpy as np
+import h5py
+import io
 import torch
 import torch.utils.data as data
 import torch.nn.functional as F
+from torchvision import transforms
+from PIL import Image
+import cv2 as cv
 
 import os
 import math
@@ -13,6 +17,62 @@ import os.path as osp
 
 from utils import frame_utils
 from utils.augmentor import FlowAugmentor, SparseFlowAugmentor
+
+import kornia.color
+
+def rgb_to_xy_flows(flows, to_image_coordinates=True, to_sampling_grid=False):
+    assert flows.dtype == torch.uint8, flows.dtype
+    assert flows.shape[-3] == 3, flows.shape
+    flows_hsv = kornia.color.rgb_to_hsv(flows.float() / 255.)
+
+    hue, sat, val = flows_hsv.split([1, 1, 1], dim=-3)
+    flow_x = torch.cos(hue) * val
+    flow_y = torch.sin(hue) * val
+
+    if to_image_coordinates:
+        flow_h = -flow_y
+        flow_w = flow_x
+        return torch.cat([flow_h, flow_w], -3)
+    elif to_sampling_grid:
+        return torch.cat([flow_x, -flow_y], -3)
+    else:
+        return torch.cat([flow_x, flow_y], -3)
+
+class RgbFlowToXY(object):
+    def __init__(self, to_image_coordinates=True, to_sampling_grid=False):
+        self.to_image_coordinates = to_image_coordinates
+        self.to_sampling_grid = to_sampling_grid
+    def __call__(self, flows_rgb):
+        return rgb_to_xy_flows(flows_rgb, self.to_image_coordinates, self.to_sampling_grid)
+
+class FlowToRgb(object):
+
+    def __init__(self, max_speed=1.0, from_image_cooordinates=True, from_sampling_grid=False):
+        self.max_speed = max_speed
+        self.from_image_cooordinates = from_image_cooordinates
+        self.from_sampling_grid = from_sampling_grid
+
+    def __call__(self, flow):
+        assert flow.size(-3) == 2, flow.shape
+        if self.from_sampling_grid:
+            flow_x, flow_y = torch.split(flow, [1, 1], dim=-3)
+            flow_y = -flow_y
+        elif not self.from_image_cooordinates:
+            flow_x, flow_y = torch.split(flow, [1, 1], dim=-3)
+        else:
+            flow_h, flow_w = torch.split(flow, [1,1], dim=-3)
+            flow_x, flow_y = [flow_w, -flow_h]
+
+        angle = torch.atan2(flow_y, flow_x) # in radians from -pi to pi
+        speed = torch.sqrt(flow_x**2 + flow_y**2) / self.max_speed
+
+        hue = torch.fmod(angle, torch.tensor(2 * np.pi))
+        sat = torch.ones_like(hue)
+        val = speed
+
+        hsv = torch.cat([hue, sat, val], -3)
+        rgb = kornia.color.hsv_to_rgb(hsv)
+        return rgb
 
 
 class FlowDataset(data.Dataset):
@@ -94,10 +154,10 @@ class FlowDataset(data.Dataset):
         self.flow_list = v * self.flow_list
         self.image_list = v * self.image_list
         return self
-        
+
     def __len__(self):
         return len(self.image_list)
-        
+
 
 class MpiSintel(FlowDataset):
     def __init__(self, aug_params=None, split='training', root='datasets/Sintel', dstype='clean'):
@@ -119,25 +179,21 @@ class MpiSintel(FlowDataset):
 
 
 class FlyingChairs(FlowDataset):
-    def __init__(self, aug_params=None, split='train', root='datasets/FlyingChairs_release/data'):
+    def __init__(self, aug_params=None,
+                 split='train', split_file='chairs_split.txt',
+                 root='datasets/FlyingChairs_release/data'):
         super(FlyingChairs, self).__init__(aug_params)
 
         images = sorted(glob(osp.join(root, '*.ppm')))
         flows = sorted(glob(osp.join(root, '*.flo')))
         assert (len(images)//2 == len(flows))
 
-        split_list = np.loadtxt('chairs_split.txt', dtype=np.int32)
+        split_list = np.loadtxt(split_file, dtype=np.int32)
         for i in range(len(flows)):
             xid = split_list[i]
             if (split=='training' and xid==1) or (split=='validation' and xid==2):
                 self.flow_list += [ flows[i] ]
                 self.image_list += [ [images[2*i], images[2*i+1]] ]
-
-class TdwPlayroom(FlowDataset):
-    def __init__(self, aug_params=None, split='train', root='datasets/Tdw/data'):
-        super(TdwPlayroom, self).__init__(aug_params)
-
-        # images = sorted(glob(osp.join(root, 
 
 
 class FlyingThings3D(FlowDataset):
@@ -162,7 +218,7 @@ class FlyingThings3D(FlowDataset):
                         elif direction == 'into_past':
                             self.image_list += [ [images[i+1], images[i]] ]
                             self.flow_list += [ flows[i+1] ]
-      
+
 
 class KITTI(FlowDataset):
     def __init__(self, aug_params=None, split='training', root='datasets/KITTI'):
@@ -201,6 +257,120 @@ class HD1K(FlowDataset):
 
             seq_ix += 1
 
+class TdwFlowDataset(FlowDataset):
+
+    PASSES_DICT = {'images': '_img', 'flows': '_flow', 'objects': '_id', 'depths': '_depth'}
+
+    def __init__(self,
+                 root='datasets/playroom_large_v3copy',
+                 dataset_names=['model_split_4'],
+                 filepattern="*[0-8]",
+                 test_filepattern="*9",
+                 delta_time=1,
+                 min_start_frame=5,
+                 max_start_frame=5,
+                 split='training',
+                 aug_params=None):
+        super(TdwFlowDataset, self).__init__(aug_params)
+
+        ## set filenames
+        self.datasets = [osp.join(root, nm) for nm in dataset_names]
+        self.train_files, self.test_files = [], []
+        for nm in self.datasets:
+            self.train_files.extend(sorted(glob(osp.join(nm, filepattern + ".hdf5"))))
+        for nm in self.datasets:
+            self.test_files.extend(sorted(glob(osp.join(nm, test_filepattern + ".hdf5"))))
+
+        self.delta_time = self.dT = delta_time
+        self.min_start_frame = min_start_frame
+        self.max_start_frame = max_start_frame
+
+        if split != 'training':
+            self.is_test = True
+
+    def eval(self):
+        self.is_test = True
+    def train(self, do_train=True):
+        self.is_test = do_train
+
+    @staticmethod
+    def rgb_to_xy_flows(flows, to_xy=True, scale_to_pixels=False):
+        assert flows.dtype == np.uint8, flows.dtype
+        assert flows.shape[-1] == 3, flows.shape
+        # flows = torch.from_numpy(flows).permute(2, 0, 1).to(torch.uint8)
+        # flows = kornia.color.rgb_to_hsv(flows.float() / 255.)
+        # flows = flows.permute(1, 2, 0).numpy()
+
+        flows = cv.cvtColor(flows, cv.COLOR_RGB2HSV)
+        hue, sat, val = np.split(flows, 3, axis=-1)
+        ## opencv puts hue in range [0, 180] for uint8
+        hue = (hue / 180.0) * 2 * np.pi
+        sat = sat / 255.
+        val = val / 255.
+
+        flow_x = np.cos(hue) * val
+        flow_y = np.sin(hue) * val
+
+        if scale_to_pixels:
+            H,W = flows.shape[:2]
+            flow_x *= 0.5 * (W - 1)
+            flow_y *= 0.5 * (H - 1)
+
+        if to_xy:
+            return np.concatenate([flow_x, flow_y], -1)
+        else:
+            return np.concatenate([-flow_y, flow_x], -1)
+
+    def _get_pass(self, f, pass_name, frame = 0):
+        _img = f['frames'][str(frame).zfill(4)]['images'][TdwFlowDataset.PASSES_DICT.get(pass_name, pass_name)]
+        _img = Image.open(io.BytesIO(_img[:]))
+        _img = np.array(_img)
+        return _img
+    def _get_image(self, f, frame = 0):
+        return self._get_pass(f, "images", frame=frame)
+    def _get_image_pair(self, f, frame = 0):
+        return (self._get_pass(f, "images", frame), self._get_pass(f, "images", frame + self.dT))
+    def _get_flow(self, f, frame = 0):
+        flow = self._get_pass(f, "flows", frame)
+        flow = self.rgb_to_xy_flows(flow, to_xy=True, scale_to_pixels=False)
+        return flow
+
+    def _init_seed(self):
+
+        if not self.init_seed:
+            worker_info = torch.utils.data.get_worker_info()
+            if worker_info is not None:
+                torch.manual_seed(worker_info.id)
+                np.random.seed(worker_info.id)
+                random.seed(worker_info.id)
+                self.init_seed = True
+
+
+    def __getitem__(self, index):
+
+        self._init_seed()
+        fs = self.test_files if self.is_test else self.train_files
+        index = index % len(fs)
+        fname = fs[index]
+
+        ## open the file and figure out how many frames
+        f = h5py.File(fname, 'r')
+        frames = sorted(list(f['frames'].keys()))
+        num_frames = len(frames)
+
+        ## choose a frame to read
+        min_frame = min(self.min_start_frame, num_frames - self.dT - 1)
+        max_frame = min(self.max_start_frame + self.dT, num_frames - self.dT)
+        i_frame = np.random.randint(min_frame, max_frame)
+
+        ## get a pair of images
+        img1, img2 = self._get_image_pair(f, i_frame)
+
+        ## get the flow
+        flow = self._get_flow(f, i_frame)
+
+        print(img1.shape, img2.shape, flow.shape)
+        return (img1, img2, flow, None)
 
 def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
     """ Create the data loader for the corresponding trainign set """
@@ -208,7 +378,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
     if args.stage == 'chairs':
         aug_params = {'crop_size': args.image_size, 'min_scale': -0.1, 'max_scale': 1.0, 'do_flip': True}
         train_dataset = FlyingChairs(aug_params, split='training')
-    
+
     elif args.stage == 'things':
         aug_params = {'crop_size': args.image_size, 'min_scale': -0.4, 'max_scale': 0.8, 'do_flip': True}
         clean_dataset = FlyingThings3D(aug_params, dstype='frames_cleanpass')
@@ -219,7 +389,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         aug_params = {'crop_size': args.image_size, 'min_scale': -0.2, 'max_scale': 0.6, 'do_flip': True}
         things = FlyingThings3D(aug_params, dstype='frames_cleanpass')
         sintel_clean = MpiSintel(aug_params, split='training', dstype='clean')
-        sintel_final = MpiSintel(aug_params, split='training', dstype='final')        
+        sintel_final = MpiSintel(aug_params, split='training', dstype='final')
 
         if TRAIN_DS == 'C+T+K+S+H':
             kitti = KITTI({'crop_size': args.image_size, 'min_scale': -0.3, 'max_scale': 0.5, 'do_flip': True})
@@ -233,9 +403,8 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         aug_params = {'crop_size': args.image_size, 'min_scale': -0.2, 'max_scale': 0.4, 'do_flip': False}
         train_dataset = KITTI(aug_params, split='training')
 
-    train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, 
+    train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size,
         pin_memory=False, shuffle=True, num_workers=4, drop_last=True)
 
     print('Training with %d image pairs' % len(train_dataset))
     return train_loader
-
