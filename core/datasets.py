@@ -259,6 +259,7 @@ class HD1K(FlowDataset):
 
 class TdwFlowDataset(FlowDataset):
 
+    IMAGE_SHAPE = (512,512,3)
     PASSES_DICT = {'images': '_img', 'flows': '_flow', 'objects': '_id', 'depths': '_depth'}
 
     def __init__(self,
@@ -324,14 +325,24 @@ class TdwFlowDataset(FlowDataset):
             return np.concatenate([-flow_y, flow_x], -1)
 
     def _get_pass(self, f, pass_name, frame = 0):
-        _img = f['frames'][str(frame).zfill(4)]['images'][TdwFlowDataset.PASSES_DICT.get(pass_name, pass_name)]
-        _img = Image.open(io.BytesIO(_img[:]))
-        _img = np.array(_img)
+        try:
+            _img = f['frames'][str(frame).zfill(4)]['images'][TdwFlowDataset.PASSES_DICT.get(pass_name, pass_name)]
+            _img = Image.open(io.BytesIO(_img[:]))
+            _img = np.array(_img)
+        except:
+            _img = np.zeros(self.IMAGE_SHAPE, dtype=np.uint8)
+
         return _img
     def _get_image(self, f, frame = 0):
         return self._get_pass(f, "images", frame=frame)
     def _get_image_pair(self, f, frame = 0):
-        return (self._get_pass(f, "images", frame), self._get_pass(f, "images", frame + self.dT))
+        img1 = self._get_pass(f, "images", frame)
+        try:
+            img2 = self._get_pass(f, "images", frame + self.dT)
+        except:
+            img2 = img1
+        return (img1, img2)
+
     def _get_flow(self, f, frame = 0):
         flow = self._get_pass(f, "flows", frame)
         flow = self.rgb_to_xy_flows(flow, to_xy=True, scale_to_pixels=self.scale_to_pixels)
@@ -376,6 +387,9 @@ class TdwFlowDataset(FlowDataset):
 
         ## get the flow
         flow = self._get_flow(f, i_frame)
+
+        ## close the hdf5
+        f.close()
 
         if self.augmentor is not None:
             img1, img2, flow = self.augmentor(img1, img2, flow)
