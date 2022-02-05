@@ -1,5 +1,16 @@
 #!/bin/bash
 mkdir -p checkpoints
-python -u train.py --name raft-tdw-3iters --stage tdw --validation chairs --gpus 0 1 --num_steps 100000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --iters 3
+
+# 2.5.22
+python -u train.py --name raft-tdw-bn-fullplay --stage tdw --validation chairs --gpus 0 1 --num_steps 200000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --full_playroom
+
+# python -u train.py --name raft-tdw-bn-3iters --stage tdw --validation chairs --gpus 0 1 --num_steps 10000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --iters 3
+# python -u train.py --name raft-tdw-bn-4iters --stage tdw --validation chairs --gpus 0 1 --num_steps 10000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --iters 4
+# python -u train.py --name raft-tdw-bn-5iters --stage tdw --validation chairs --gpus 0 1 --num_steps 10000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --iters 5
+# python -u train.py --name raft-tdw-bn-6iters --stage tdw --validation chairs --gpus 0 1 --num_steps 10000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --iters 6
+
+# 2.4.22
+# python -u train.py --name raft-tdw-bn --stage tdw --validation chairs --gpus 0 1 --num_steps 100000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001
+# python -u train.py --name raft-tdw-6iters --stage tdw --validation chairs --gpus 0 1 --num_steps 100000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --iters 6
 # python -u train.py --name raft-tdw-noaug --stage tdw --validation chairs --gpus 0 1 --num_steps 100000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001
 # python -u train.py --name raft-tdw-long --stage tdw --validation chairs --gpus 0 1 --num_steps 100000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001

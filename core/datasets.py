@@ -390,12 +390,29 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
     """ Create the data loader for the corresponding trainign set """
 
     if args.stage == 'tdw':
-        aug_params = {'crop_size': args.image_size, 'min_scale': -0.1, 'max_scale': 1.0, 'do_flip': True}
-        # aug_params = None
-        train_dataset = TdwFlowDataset(aug_params=aug_params, split='training')
+        if args.no_aug:
+            aug_params = None
+        else:
+            aug_params = {'crop_size': args.image_size, 'min_scale': -0.1, 'max_scale': 1.0, 'do_flip': True}
+
+        if args.full_playroom:
+            root = 'datasets/playroom_large_v3full/'
+            dataset_names = ['model_split_%d' % d for d in range(32)]
+        else:
+            root = 'datasets/playroom_large_v3copy/'
+            dataset_names = ['model_split_4']
+        train_dataset = TdwFlowDataset(
+            aug_params=aug_params,
+            split='training',
+            root=root,
+            dataset_names=dataset_names
+        )
 
     if args.stage == 'chairs':
-        aug_params = {'crop_size': args.image_size, 'min_scale': -0.1, 'max_scale': 1.0, 'do_flip': True}
+        if args.no_aug:
+            aug_params = None
+        else:
+            aug_params = {'crop_size': args.image_size, 'min_scale': -0.1, 'max_scale': 1.0, 'do_flip': True}
         train_dataset = FlyingChairs(aug_params, split='training')
 
     elif args.stage == 'things':
