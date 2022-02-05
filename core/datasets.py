@@ -262,14 +262,15 @@ class TdwFlowDataset(FlowDataset):
     PASSES_DICT = {'images': '_img', 'flows': '_flow', 'objects': '_id', 'depths': '_depth'}
 
     def __init__(self,
-                 root='datasets/playroom_large_v3copy',
+                 root='datasets/playroom_large_v3copy/',
                  dataset_names=['model_split_4'],
-                 filepattern="*[0-8]",
+                 filepattern="*",
                  test_filepattern="*9",
                  delta_time=1,
                  min_start_frame=5,
                  max_start_frame=5,
                  split='training',
+                 scale_to_pixels=True,
                  aug_params=None):
         super(TdwFlowDataset, self).__init__(aug_params)
 
@@ -284,22 +285,23 @@ class TdwFlowDataset(FlowDataset):
         self.delta_time = self.dT = delta_time
         self.min_start_frame = min_start_frame
         self.max_start_frame = max_start_frame
+        self.scale_to_pixels = scale_to_pixels
 
         if split != 'training':
             self.is_test = True
 
+    def __len__(self):
+        return len(self.train_files if not self.is_test else self.test_files)
+
     def eval(self):
         self.is_test = True
     def train(self, do_train=True):
-        self.is_test = do_train
+        self.is_test = not do_train
 
     @staticmethod
     def rgb_to_xy_flows(flows, to_xy=True, scale_to_pixels=False):
         assert flows.dtype == np.uint8, flows.dtype
         assert flows.shape[-1] == 3, flows.shape
-        # flows = torch.from_numpy(flows).permute(2, 0, 1).to(torch.uint8)
-        # flows = kornia.color.rgb_to_hsv(flows.float() / 255.)
-        # flows = flows.permute(1, 2, 0).numpy()
 
         flows = cv.cvtColor(flows, cv.COLOR_RGB2HSV)
         hue, sat, val = np.split(flows, 3, axis=-1)
@@ -332,8 +334,8 @@ class TdwFlowDataset(FlowDataset):
         return (self._get_pass(f, "images", frame), self._get_pass(f, "images", frame + self.dT))
     def _get_flow(self, f, frame = 0):
         flow = self._get_pass(f, "flows", frame)
-        flow = self.rgb_to_xy_flows(flow, to_xy=True, scale_to_pixels=False)
-        return flow
+        flow = self.rgb_to_xy_flows(flow, to_xy=True, scale_to_pixels=self.scale_to_pixels)
+        return flow.astype(np.float32)
 
     def _init_seed(self):
 
@@ -366,14 +368,31 @@ class TdwFlowDataset(FlowDataset):
         ## get a pair of images
         img1, img2 = self._get_image_pair(f, i_frame)
 
+        if self.is_test:
+            return (torch.from_numpy(img1).permute(2, 0, 1).float(),
+                    torch.from_numpy(img2).permute(2, 0, 1).float(),
+                    {})
+
+
         ## get the flow
         flow = self._get_flow(f, i_frame)
 
-        print(img1.shape, img2.shape, flow.shape)
-        return (img1, img2, flow, None)
+        if self.augmentor is not None:
+            img1, img2, flow = self.augmentor(img1, img2, flow)
+
+        valid = (np.abs(flow[...,0]) < 1000) & (np.abs(flow[...,1]) < 1000)
+
+        to_tensor = lambda x: torch.from_numpy(x).permute(2, 0, 1).float()
+
+        return (to_tensor(img1), to_tensor(img2), to_tensor(flow), torch.from_numpy(valid).float())
 
 def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
     """ Create the data loader for the corresponding trainign set """
+
+    if args.stage == 'tdw':
+        aug_params = {'crop_size': args.image_size, 'min_scale': -0.1, 'max_scale': 1.0, 'do_flip': True}
+        # aug_params = None
+        train_dataset = TdwFlowDataset(aug_params=aug_params, split='training')
 
     if args.stage == 'chairs':
         aug_params = {'crop_size': args.image_size, 'min_scale': -0.1, 'max_scale': 1.0, 'do_flip': True}
@@ -403,6 +422,8 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         aug_params = {'crop_size': args.image_size, 'min_scale': -0.2, 'max_scale': 0.4, 'do_flip': False}
         train_dataset = KITTI(aug_params, split='training')
 
+    print(train_dataset)
+    print(len(train_dataset))
     train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size,
         pin_memory=False, shuffle=True, num_workers=4, drop_last=True)
 
