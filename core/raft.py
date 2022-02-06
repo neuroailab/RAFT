@@ -121,7 +121,10 @@ class RAFT(nn.Module):
         flow_predictions = []
         for itr in range(iters):
             coords1 = coords1.detach()
-            corr = corr_fn(coords1) # index correlation volume
+            if self.args.static_coords:
+                corr = corr_fn(coords0.detach())
+            else:
+                corr = corr_fn(coords1) # index correlation volume
 
             flow = coords1 - coords0
             with autocast(enabled=self.args.mixed_precision):

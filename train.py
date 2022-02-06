@@ -238,6 +238,7 @@ def get_args(cmd=None):
     parser.add_argument('--add_noise', action='store_true')
     parser.add_argument('--no_aug', action='store_true')
     parser.add_argument('--full_playroom', action='store_true')
+    parser.add_argument('--static_coords', action='store_true')
 
     if cmd is None:
         args = parser.parse_args()
