@@ -60,3 +60,6 @@ def viz_raft_prediction(model, dataset, ex=0, iters=[1,12,24]):
 
     plt.tight_layout()
     plt.show()
+
+DEFAULT_CMAP = plt.cm.twilight
+DEFAULT_ERRMAP_COLORS = {k:float(v)/DEFAULT_CMAP.N for k,v in {'tp': 250, 'tn': 0, 'fp': 420, 'fn': 80}.items()}
