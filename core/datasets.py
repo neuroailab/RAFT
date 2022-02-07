@@ -271,6 +271,7 @@ class TdwFlowDataset(FlowDataset):
                  min_start_frame=5,
                  max_start_frame=5,
                  split='training',
+                 get_gt_flow=False,
                  scale_to_pixels=True,
                  aug_params=None):
         super(TdwFlowDataset, self).__init__(aug_params)
@@ -290,6 +291,8 @@ class TdwFlowDataset(FlowDataset):
 
         if split != 'training':
             self.is_test = True
+
+        self.get_gt_flow = get_gt_flow or (not self.is_test)
 
     def __len__(self):
         return len(self.train_files if not self.is_test else self.test_files)
@@ -372,24 +375,25 @@ class TdwFlowDataset(FlowDataset):
         num_frames = len(frames)
 
         ## choose a frame to read
-        min_frame = min(self.min_start_frame, num_frames - self.dT - 1)
-        max_frame = min(self.max_start_frame + self.dT, num_frames - self.dT)
+        min_frame = min(self.min_start_frame or 0, num_frames - self.dT - 1)
+        max_frame = min((self.max_start_frame or (num_frames - 2*self.dT)) + self.dT, num_frames - self.dT)
         i_frame = np.random.randint(min_frame, max_frame)
 
         ## get a pair of images
         img1, img2 = self._get_image_pair(f, i_frame)
 
-        if self.is_test:
-            return (torch.from_numpy(img1).permute(2, 0, 1).float(),
-                    torch.from_numpy(img2).permute(2, 0, 1).float(),
-                    {})
-
-
         ## get the flow
-        flow = self._get_flow(f, i_frame)
+        flow = self._get_flow(f, i_frame) if self.get_gt_flow else {}
 
         ## close the hdf5
         f.close()
+
+        if self.is_test:
+            return (torch.from_numpy(img1).permute(2, 0, 1).float(),
+                    torch.from_numpy(img2).permute(2, 0, 1).float(),
+                    torch.from_numpy(flow).permute(2, 0, 1).float() if self.get_gt_flow else {})
+
+
 
         if self.augmentor is not None:
             img1, img2, flow = self.augmentor(img1, img2, flow)
