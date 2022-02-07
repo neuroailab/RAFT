@@ -16,6 +16,7 @@ import torch.nn.functional as F
 
 from torch.utils.data import DataLoader
 from raft import RAFT
+from bootraft import BootRaft
 import evaluate
 import datasets
 
@@ -135,7 +136,12 @@ class Logger:
 
 def train(args):
 
-    model = nn.DataParallel(RAFT(args), device_ids=args.gpus)
+    if args.model.lower() == 'bootraft':
+        model_cls = BootRaft
+        print("used BOOTRAFT")
+    else:
+        model_cls = RAFT
+    model = nn.DataParallel(model_cls(args), device_ids=args.gpus)
     print("Parameter Count: %d" % count_parameters(model))
 
     if args.restore_ckpt is not None:
@@ -239,6 +245,9 @@ def get_args(cmd=None):
     parser.add_argument('--no_aug', action='store_true')
     parser.add_argument('--full_playroom', action='store_true')
     parser.add_argument('--static_coords', action='store_true')
+
+    ## model class
+    parser.add_argument('--model', type=str, default='RAFT', help='Model class')
 
     if cmd is None:
         args = parser.parse_args()
