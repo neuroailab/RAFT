@@ -1,8 +1,12 @@
 #!/bin/bash
 mkdir -p checkpoints
+# 2.7.22
+python -u train.py --name raft-tdw-bn-100clip --stage tdw --validation chairs --gpus 0 1 --num_steps 5000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --clip 100.0
+python -u train.py --name raft-tdw-bn-0wd --stage tdw --validation chairs --gpus 0 1 --num_steps 5000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0
+# python -u train.py --name raft-tdw-bn-allframes --stage tdw --validation chairs --gpus 0 1 --num_steps 100000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --max_frame -1
 # 2.6.22
-python -u train.py --name bootraft-tdw --stage tdw --validation chairs --gpus 0 1 --num_steps 20000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model bootraft
-python -u train.py --name bootraft-tdw-noaug --stage tdw --validation chairs --gpus 0 1 --num_steps 20000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model bootraft --no_aug
+# python -u train.py --name bootraft-tdw --stage tdw --validation chairs --gpus 0 1 --num_steps 20000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model bootraft
+# python -u train.py --name bootraft-tdw-noaug --stage tdw --validation chairs --gpus 0 1 --num_steps 20000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model bootraft --no_aug
 # python -u train.py --name raft-tdw-g0-lr0001-2iters --stage tdw --validation chairs --gpus 0 1 --num_steps 5000 --batch_size 8 --lr 0.0001 --image_size 496 496 --wdecay 0.0001 --iters 2 --gamma 0
 # python -u train.py --name raft-tdw-g0-lr0001-3iters --stage tdw --validation chairs --gpus 0 1 --num_steps 5000 --batch_size 8 --lr 0.0001 --image_size 496 496 --wdecay 0.0001 --iters 3 --gamma 0
 # python -u train.py --name raft-tdw-g0-lr0001-4iters --stage tdw --validation chairs --gpus 0 1 --num_steps 5000 --batch_size 8 --lr 0.0001 --image_size 496 496 --wdecay 0.0001 --iters 4 --gamma 0

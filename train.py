@@ -245,6 +245,7 @@ def get_args(cmd=None):
     parser.add_argument('--no_aug', action='store_true')
     parser.add_argument('--full_playroom', action='store_true')
     parser.add_argument('--static_coords', action='store_true')
+    parser.add_argument('--max_frame', type=int, default=5)
 
     ## model class
     parser.add_argument('--model', type=str, default='RAFT', help='Model class')

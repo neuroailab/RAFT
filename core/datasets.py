@@ -419,11 +419,14 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         else:
             root = 'datasets/playroom_large_v3copy/'
             dataset_names = ['model_split_4']
+
         train_dataset = TdwFlowDataset(
             aug_params=aug_params,
             split='training',
             root=root,
-            dataset_names=dataset_names
+            dataset_names=dataset_names,
+            min_start_frame=5,
+            max_start_frame=(args.max_frame if args.max_frame > 0 else None)
         )
 
     if args.stage == 'chairs':
