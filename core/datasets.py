@@ -339,8 +339,10 @@ class TdwFlowDataset(FlowDataset):
     def set_frame_selection(self, frames_file, training=True):
 
         files = self.train_files if training else self.test_files
-        if (frames_file is None) or not Path(frames_file).exists():
+        if (frames_file is None):
             return {fname: None for fname in files}
+        elif not Path(frames_file).exists():
+            raise IOError("the frames file %s does not exist" % frames_file)
 
         filtered_frames = json.loads(Path(frames_file).read_text())
         frames_to_use = {}
