@@ -1,0 +1,20 @@
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class KMeans(nn.Module):
+    def __init__(self, num_clusters, num_iters=50, append_coordinates=True):
+        super().__init__()
+        self.num_clusters = self.K = num_clusters
+        self.num_iters = num_iters
+        self.append_coordinates = append_coordinates
+
+    def preprocess(self, x):
+        if x.dtype == torch.uint8:
+            x = x.float() / 255.0
+            x = 2.*x - 1.
+
+    def forward(self, x):
+
+        x = self.preprocess(x)

@@ -13,6 +13,7 @@ from tqdm import tqdm
 import datasets
 from raft import RAFT
 from bootraft import BootRaft
+from kmeans import KMeans
 
 from argparse import ArgumentParser
 
@@ -145,11 +146,70 @@ class ThresholdedEnergyScore(FrameScore):
             energy = (energy > self.thresh).float()
         return energy.mean()
 
+class VideoSegmentationModel(nn.Module):
+    num_input_frames = 2
+    def __init__(self, model, num_input_frames=None, **kwargs):
+        super().__init__()
+        self.model = model
+        self.model.cuda()
+        self.model.eval()
+
+        if num_input_frames is not None:
+            self.num_input_frames = num_input_frames
+
+    def forward(self, *args, **kwargs):
+        images = args[:self.num_input_frames]
+        images = torch.stack(images, 1) # [B,num_frames,C,H,W]
+        images = images.to(torch.uint8)
+        assert len(images.shape) == 5, images.shape
+
+        segments = self.model(images)
+        assert len(segments.shape) == 3, segments.shape
+        assert segments.dtype == torch.long, segments.dtype
+        return segments
+
+class ExplainedAwayMotion(FrameScore):
+    frame_offset = 0
+    defaults = {'thresh': 0.5}
+    def __init__(self,
+                 model,
+                 segment_model,
+                 thresh=0.5,
+                 **kwargs):
+        super().__init__(model=model)
+        self.segment_model = segment_model
+        self.segment_model.cuda()
+        self.segment_model.eval()
+        self.thresh = thresh
+
+    def score_prediction(self, pred_motion, pred_segments):
+        ## get the motion segments by thresholding
+
+        ## get the static segments
+
+        ## find the segment that overlaps most with the motion segments
+
+        ## "explain away" by setting remaining pixels to a new value
+        print("flwo", pred_motion.shape, pred_motion.dtype)
+        print("segs", pred_segments.shape, pred_segments.dtype)
+
+        return pred_motion.abs().mean()
+
+    def forward(self, *args, **kwargs):
+
+        pred_motion = self.model(*args, **kwargs)
+        if isinstance(pred_motion, (list, tuple)):
+            pred_motion = pred_motion[-1]
+        pred_segments = self.segment_model(*args, **kwargs)[:,None] # [B,1,H,W]
+        score = self.score_prediction(pred_motion, pred_segments)
+        return score.item()
+
 def score_functions(name):
     funcs = dict([
         ('total_energy', TotalEnergyScore),
         ('max_energy', MaximumEnergyScore),
-        ('thresh_energy', ThresholdedEnergyScore)
+        ('thresh_energy', ThresholdedEnergyScore),
+        ('explained_motion', ExplainedAwayMotion)
     ])
     try:
         return funcs[name]
@@ -171,7 +231,6 @@ class TrainingMovieFinder(object):
                  outfile: str = 'training_frames.json',
                  video_length: int = 2,
                  num_files: int = None,
-                 # score_config=(ThresholdedEnergyScore, {'thresh': 0.5}),
                  score_config=(TotalEnergyScore, {}),
                  model_call_kwargs = {'iters': 12, 'test_mode': True}
     ):
@@ -308,7 +367,25 @@ def main(args):
 
 if __name__ == '__main__':
     args = get_args()
-    main(args)
+    # main(args)
+
+    model = load_model(args)
+    dataset = get_dataset(args)
+
+    knet = nn.DataParallel(KMeans(32, 50, True), device_ids=args.gpus).cuda()
+    seg_model = VideoSegmentationModel(model=knet, num_input_frames=1)
+
+    ex = 3
+    img1, img2, _, _ = dataset[ex]
+    img1 = img1[None].cuda()
+    img2 = img2[None].cuda()
+    segs = seg_model(img2)
+
+    print(segs.shape, segs.dtype)
+
+    explain_net = ExplainedAwayMotion(model, seg_model)
+    score = explain_net(img1, img2, test_mode=True, iters=12)
+    print(score)
 
     # torch.manual_seed(1234)
     # np.random.seed(1234)
