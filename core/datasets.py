@@ -452,8 +452,9 @@ class TdwFlowDataset(FlowDataset):
         frames_list = None
         if self.select_frames_per_file:
             frames_list = filtered_frames.get(fname, [])
-            if len(frames_list) == 0:
-                frames_list = None
+            if frames_list is not None:
+                if (len(frames_list) == 0):
+                    frames_list = None
 
         if frames_list is not None:
             i_frame = random.choice(frames_list)
