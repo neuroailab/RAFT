@@ -31,6 +31,13 @@ def get_args(cmd=None):
     parser.add_argument("--dataset", type=str, default="tdw", help="which dataset to filter")
     parser.add_argument("--num_files", type=int, default=-1, help="how many files to search over")
 
+    ## scoring
+    parser.add_argument("--score_func", default="total_energy", help="Which score function to use")
+
+    ## main
+    parser.add_argument("--overwrite", action="store_true", help="overwrite the file if it exists")
+    parser.add_argument("--verbose", action="store_true")
+
     if cmd is None:
         args = parser.parse_args()
         print(args)
@@ -39,6 +46,7 @@ def get_args(cmd=None):
     return args
 
 class DeltaImages(nn.Module):
+    num_input_frames = 2
     def __init__(self, args, thresh=0.025):
         super().__init__()
         self.args = args
@@ -115,15 +123,19 @@ class FrameScore(nn.Module):
 
 class TotalEnergyScore(FrameScore):
     frame_offset = 0
+    defaults = {}
     def score_prediction(self, pred):
         return pred.square().sum(-3).sqrt().mean()
 
 class MaximumEnergyScore(FrameScore):
     frame_offset = 0
+    defaults = {}
     def score_prediction(self, pred):
         return pred.square().sum(-3).sqrt().amax()
 
 class ThresholdedEnergyScore(FrameScore):
+    frame_offset = 0
+    defaults = {'thresh': 0.5}
     def __init__(self, thresh=0.5, *args, **kwargs):
         self.thresh = thresh
         super().__init__(*args, **kwargs)
@@ -132,6 +144,24 @@ class ThresholdedEnergyScore(FrameScore):
         if self.thresh:
             energy = (energy > self.thresh).float()
         return energy.mean()
+
+def score_functions(name):
+    funcs = dict([
+        ('total_energy', TotalEnergyScore),
+        ('max_energy', MaximumEnergyScore),
+        ('thresh_energy', ThresholdedEnergyScore)
+    ])
+    try:
+        return funcs[name]
+    except:
+        raise ValueError("%s is not one of the valid scoring modules: %s" % (name, funcs.keys()))
+
+def get_score_config(args):
+
+    func = score_functions(args.score_func)
+    ## todo: read in a config file
+    kwargs = getattr(func, 'defaults', {})
+    return (func, kwargs)
 
 class TrainingMovieFinder(object):
     """a class for reading in movies from a Torch dataset and filtering according to motion"""
@@ -206,14 +236,14 @@ class TrainingMovieFinder(object):
 
         f.close()
         filtered = self.filter_scores(scores)
-        return (filename, filtered)
+        return (filename, filtered, frame)
 
     def _write_scores(self, filename, frames_list):
         write_dict = {filename: frames_list}
         write_str = json.dumps(write_dict, indent=4)
         self.outfile.write_text(write_str, encoding='utf-8')
 
-    def __call__(self, files=None, overwrite=False):
+    def __call__(self, files=None, overwrite=False, verbose=False):
 
         if files is None:
             files = range(len(self.infiles))
@@ -222,11 +252,20 @@ class TrainingMovieFinder(object):
         if not overwrite and self.outfile.exists():
             self.outdata.update(json.loads(self.outfile.read_text()))
 
+        _fname = lambda s: '/'.join(s.split('/')[-2:])
+
         for idx in tqdm(files):
-            filename, filtered = self.filter_video(idx)
+            if (not overwrite):
+                if _fname(self.infiles[idx % self.num_files]) in self.outdata.keys():
+                    continue
+            filename, filtered, num_frames = self.filter_video(idx)
             filename = Path(filename)
             filename = '/'.join([filename.parent.name, filename.name])
             self.outdata[filename] = filtered
+            if verbose:
+                print("selected frames for file %s of length %d frames --- %s" % \
+                      (filename, num_frames, filtered))
+
 
             json_str = json.dumps(self.outdata, indent=4)
             try:
@@ -243,22 +282,46 @@ class TrainingMovieFinder(object):
 ## store data for this video
 ## apply threshold and/or max
 ## append to json outfile
-
-if __name__ == '__main__':
-    args = get_args()
+def main(args):
 
     torch.manual_seed(1234)
     np.random.seed(1234)
-
     if not os.path.isdir('datasets/supervision_frames'):
         os.mkdir('datasets/supervision_frames')
 
     model = load_model(args)
     dataset = get_dataset(args)
-    print(dataset.files[:3])
+    score_config = get_score_config(args)
 
-    finder = TrainingMovieFinder(model, dataset)
-    finder(None, overwrite=True)
+    finder = TrainingMovieFinder(
+        model=model,
+        dataset=dataset,
+        outfile=args.outfile,
+        video_length=getattr(model, 'num_input_frames', 2),
+        num_files=args.num_files,
+        score_config=score_config
+    )
+
+    finder(files=None, overwrite=args.overwrite, verbose=args.verbose)
+    print("Wrote training frames to %s" % args.outfile)
+
+
+if __name__ == '__main__':
+    args = get_args()
+    main(args)
+
+    # torch.manual_seed(1234)
+    # np.random.seed(1234)
+
+    # if not os.path.isdir('datasets/supervision_frames'):
+    #     os.mkdir('datasets/supervision_frames')
+
+    # model = load_model(args)
+    # dataset = get_dataset(args)
+    # print(dataset.files[:3])
+
+    # finder = TrainingMovieFinder(model, dataset)
+    # finder(None, overwrite=True)
     # for i in range(2):
     #     filename, filtered = finder.filter_video(i)
     #     print(filename, filtered)
