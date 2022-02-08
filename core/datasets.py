@@ -1,6 +1,7 @@
 # Data loading based on https://github.com/NVIDIA/flownet2-pytorch
+from pathlib import Path
 import numpy as np
-import h5py
+import h5py, json
 import io
 import torch
 import torch.utils.data as data
@@ -270,7 +271,10 @@ class TdwFlowDataset(FlowDataset):
                  delta_time=1,
                  min_start_frame=5,
                  max_start_frame=5,
+                 select_frames_per_file=True,
                  split='training',
+                 training_frames=None,
+                 testing_frames=None,
                  get_gt_flow=False,
                  scale_to_pixels=True,
                  aug_params=None):
@@ -284,9 +288,14 @@ class TdwFlowDataset(FlowDataset):
         for nm in self.datasets:
             self.test_files.extend(sorted(glob(osp.join(nm, test_filepattern + ".hdf5"))))
 
+        ## the frames for training given by a json file
+        self.training_frames = training_frames
+        self.testing_frames = testing_frames
+
         self.delta_time = self.dT = delta_time
         self.min_start_frame = min_start_frame
         self.max_start_frame = max_start_frame
+        self.select_frames_per_file = select_frames_per_file
         self.scale_to_pixels = scale_to_pixels
 
         if split != 'training':
@@ -300,6 +309,49 @@ class TdwFlowDataset(FlowDataset):
     @property
     def files(self):
         return self.train_files if not self.is_test else self.test_files
+
+    @property
+    def training_frames(self):
+        return self._training_frames
+    @training_frames.setter
+    def training_frames(self, frames_file_list):
+        if not isinstance(frames_file_list, (list, tuple)):
+            frames_file_list = [frames_file_list]
+
+        self._training_frames = {}
+        for file in frames_file_list:
+            self._training_frames.update(
+                self.set_frame_selection(file, True))
+
+    @property
+    def testing_frames(self):
+        return self._testing_frames
+    @testing_frames.setter
+    def testing_frames(self, frames_file_list):
+        if not isinstance(frames_file_list, (list, tuple)):
+            frames_file_list = [frames_file_list]
+
+        self._testing_frames = {}
+        for file in frames_file_list:
+            self._testing_frames.update(
+                self.set_frame_selection(file, False))
+
+    def set_frame_selection(self, frames_file, training=True):
+
+        files = self.train_files if training else self.test_files
+        if (frames_file is None) or not Path(frames_file).exists():
+            return {fname: None for fname in files}
+
+        filtered_frames = json.loads(Path(frames_file).read_text())
+        frames_to_use = {}
+
+        _short = lambda s: Path(s).parent.name + '/' + Path(s).name
+
+        ## require a string match on filename only for fname and parent dir
+        for fname in files:
+            frames_to_use[fname] = filtered_frames.get(_short(fname), None)
+
+        return frames_to_use
 
     def eval(self):
         self.is_test = True
@@ -384,6 +436,7 @@ class TdwFlowDataset(FlowDataset):
 
         self._init_seed()
         fs = self.test_files if self.is_test else self.train_files
+        filtered_frames = self.testing_frames if self.is_test else self.training_frames
         index = index % len(fs)
         fname = fs[index]
 
@@ -395,7 +448,18 @@ class TdwFlowDataset(FlowDataset):
         ## choose a frame to read
         min_frame = min(self.min_start_frame or 0, num_frames - self.dT - 1)
         max_frame = min((self.max_start_frame or (num_frames - 2*self.dT)) + self.dT, num_frames - self.dT)
-        i_frame = np.random.randint(min_frame, max_frame)
+
+        frames_list = None
+        if self.select_frames_per_file:
+            frames_list = filtered_frames.get(fname, [])
+            if len(frames_list) == 0:
+                frames_list = None
+
+        if frames_list is not None:
+            i_frame = random.choice(frames_list)
+            i_frame = min(max(min_frame, i_frame), max_frame - 1)
+        else:
+            i_frame = np.random.randint(min_frame, max_frame)
 
         ## get a pair of images
         img1, img2 = self._get_image_pair(f, i_frame)
@@ -444,7 +508,8 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             root=root,
             dataset_names=dataset_names,
             min_start_frame=5,
-            max_start_frame=(args.max_frame if args.max_frame > 0 else None)
+            max_start_frame=(args.max_frame if args.max_frame > 0 else None),
+            training_frames=args.training_frames
         )
 
     if args.stage == 'chairs':

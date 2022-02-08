@@ -249,6 +249,7 @@ def get_args(cmd=None):
 
     ## model class
     parser.add_argument('--model', type=str, default='RAFT', help='Model class')
+    parser.add_argument('--training_frames', help="a JSON file of frames to train from")
 
     if cmd is None:
         args = parser.parse_args()

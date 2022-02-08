@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from tqdm import tqdm
 
 import datasets
 from raft import RAFT
@@ -122,6 +123,16 @@ class MaximumEnergyScore(FrameScore):
     def score_prediction(self, pred):
         return pred.square().sum(-3).sqrt().amax()
 
+class ThresholdedEnergyScore(FrameScore):
+    def __init__(self, thresh=0.5, *args, **kwargs):
+        self.thresh = thresh
+        super().__init__(*args, **kwargs)
+    def score_prediction(self, pred):
+        energy = pred.square().sum(-3).sqrt()
+        if self.thresh:
+            energy = (energy > self.thresh).float()
+        return energy.mean()
+
 class TrainingMovieFinder(object):
     """a class for reading in movies from a Torch dataset and filtering according to motion"""
     def __init__(self,
@@ -129,9 +140,10 @@ class TrainingMovieFinder(object):
                  dataset: torch.utils.data.Dataset,
                  outfile: str = 'training_frames.json',
                  video_length: int = 2,
-                 num_files: int = 10,
-                 score_config=(MaximumEnergyScore, {}),
-                 model_call_kwargs = {'iters': 6, 'test_mode': True}
+                 num_files: int = None,
+                 # score_config=(ThresholdedEnergyScore, {'thresh': 0.5}),
+                 score_config=(TotalEnergyScore, {}),
+                 model_call_kwargs = {'iters': 12, 'test_mode': True}
     ):
         self.model = model
         self.model_call_kwargs = model_call_kwargs
@@ -150,7 +162,7 @@ class TrainingMovieFinder(object):
 
     def set_score_fn(self, config):
         if hasattr(config, 'keys'):
-            func = config.pop('func', TotalMotionScore)
+            func = config.pop('func', TotalEnergyScore)
             self.score_fn = func(model=self.model, **config)
         elif hasattr(config, '__len__'):
             if len(config) == 1:
@@ -162,6 +174,8 @@ class TrainingMovieFinder(object):
         else:
             raise ValueError()
 
+        print("Using Score Function --- %s" % type(self.score_fn).__name__)
+
         self._score_offset = getattr(self.score_fn, 'frame_offset', 0)
 
     def _score_video(self, video):
@@ -170,11 +184,11 @@ class TrainingMovieFinder(object):
         for i in range(n_frames - 1):
             img1, img2 = to_tensor(video[i]), to_tensor(video[i+1])
             score = self.score_fn(img1, img2, **self.model_call_kwargs)
-            print(score)
         return score
 
     def filter_scores(self, scores):
-        return sorted([k for k,v in scores.items() if v > 20])
+        # return sorted([k for k,v in scores.items() if v > 20])
+        return [int(np.argmax(np.array([scores[k] for k in sorted(scores.keys())])))]
 
     def filter_video(self, file_idx):
 
@@ -191,7 +205,6 @@ class TrainingMovieFinder(object):
             frame += 1
 
         f.close()
-        print(scores)
         filtered = self.filter_scores(scores)
         return (filename, filtered)
 
@@ -200,6 +213,26 @@ class TrainingMovieFinder(object):
         write_str = json.dumps(write_dict, indent=4)
         self.outfile.write_text(write_str, encoding='utf-8')
 
+    def __call__(self, files=None, overwrite=False):
+
+        if files is None:
+            files = range(len(self.infiles))
+
+        self.outdata = {}
+        if not overwrite and self.outfile.exists():
+            self.outdata.update(json.loads(self.outfile.read_text()))
+
+        for idx in tqdm(files):
+            filename, filtered = self.filter_video(idx)
+            filename = Path(filename)
+            filename = '/'.join([filename.parent.name, filename.name])
+            self.outdata[filename] = filtered
+
+            json_str = json.dumps(self.outdata, indent=4)
+            try:
+                self.outfile.write_text(json_str, encoding='utf-8')
+            except:
+                raise Exception("unable to write to %s" % self.outfile.name)
 
 ## TODO
 ## read in a file
@@ -225,7 +258,8 @@ if __name__ == '__main__':
     print(dataset.files[:3])
 
     finder = TrainingMovieFinder(model, dataset)
-    for i in range(2):
-        filename, filtered = finder.filter_video(i)
-        print(filename, filtered)
-        finder._write_scores(filename, filtered)
+    finder(None, overwrite=True)
+    # for i in range(2):
+    #     filename, filtered = finder.filter_video(i)
+    #     print(filename, filtered)
+    #     finder._write_scores(filename, filtered)
