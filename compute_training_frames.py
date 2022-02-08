@@ -117,19 +117,26 @@ class TotalEnergyScore(FrameScore):
     def score_prediction(self, pred):
         return pred.square().sum(-3).sqrt().mean()
 
+class MaximumEnergyScore(FrameScore):
+    frame_offset = 0
+    def score_prediction(self, pred):
+        return pred.square().sum(-3).sqrt().amax()
+
 class TrainingMovieFinder(object):
     """a class for reading in movies from a Torch dataset and filtering according to motion"""
     def __init__(self,
                  model: nn.Module,
                  dataset: torch.utils.data.Dataset,
-                 video_length: int = 3,
-                 num_files: int = 3,
-                 score_config=(TotalEnergyScore, {}),
+                 outfile: str = 'training_frames.json',
+                 video_length: int = 2,
+                 num_files: int = 10,
+                 score_config=(MaximumEnergyScore, {}),
                  model_call_kwargs = {'iters': 6, 'test_mode': True}
     ):
         self.model = model
         self.model_call_kwargs = model_call_kwargs
         self.dataset = dataset
+        self.outfile = Path(outfile)
 
         self.infiles = self.dataset.files
         if num_files is not None:
@@ -166,6 +173,9 @@ class TrainingMovieFinder(object):
             print(score)
         return score
 
+    def filter_scores(self, scores):
+        return sorted([k for k,v in scores.items() if v > 20])
+
     def filter_video(self, file_idx):
 
         file_idx = file_idx % self.num_files
@@ -182,7 +192,14 @@ class TrainingMovieFinder(object):
 
         f.close()
         print(scores)
-        return scores
+        filtered = self.filter_scores(scores)
+        return (filename, filtered)
+
+    def _write_scores(self, filename, frames_list):
+        write_dict = {filename: frames_list}
+        write_str = json.dumps(write_dict, indent=4)
+        self.outfile.write_text(write_str, encoding='utf-8')
+
 
 ## TODO
 ## read in a file
@@ -208,7 +225,7 @@ if __name__ == '__main__':
     print(dataset.files[:3])
 
     finder = TrainingMovieFinder(model, dataset)
-    for i in range(3):
-        scores = finder.filter_video(i)
-        keys = sorted(scores.keys())
-        print("argmax", np.argmax(np.array([scores[k] for k in keys])))
+    for i in range(2):
+        filename, filtered = finder.filter_video(i)
+        print(filename, filtered)
+        finder._write_scores(filename, filtered)
