@@ -297,6 +297,10 @@ class TdwFlowDataset(FlowDataset):
     def __len__(self):
         return len(self.train_files if not self.is_test else self.test_files)
 
+    @property
+    def files(self):
+        return self.train_files if not self.is_test else self.test_files
+
     def eval(self):
         self.is_test = True
     def train(self, do_train=True):
@@ -327,17 +331,20 @@ class TdwFlowDataset(FlowDataset):
         else:
             return np.concatenate([-flow_y, flow_x], -1)
 
-    def _get_pass(self, f, pass_name, frame = 0):
+    def _get_pass(self, f, pass_name, frame = 0, return_zeros=True):
         try:
             _img = f['frames'][str(frame).zfill(4)]['images'][TdwFlowDataset.PASSES_DICT.get(pass_name, pass_name)]
             _img = Image.open(io.BytesIO(_img[:]))
             _img = np.array(_img)
         except:
-            _img = np.zeros(self.IMAGE_SHAPE, dtype=np.uint8)
-
+            if return_zeros:
+                _img = np.zeros(self.IMAGE_SHAPE, dtype=np.uint8)
+            else:
+                return None
         return _img
-    def _get_image(self, f, frame = 0):
-        return self._get_pass(f, "images", frame=frame)
+
+    def _get_image(self, f, frame = 0, return_zeros=True):
+        return self._get_pass(f, "images", frame=frame, return_zeros=return_zeros)
     def _get_image_pair(self, f, frame = 0):
         img1 = self._get_pass(f, "images", frame)
         try:
@@ -345,6 +352,17 @@ class TdwFlowDataset(FlowDataset):
         except:
             img2 = img1
         return (img1, img2)
+
+    def get_video(self, f, frame_start = 0, video_length = 2):
+
+        video = []
+        frame_end = frame_start + self.dT * video_length
+        for frame in range(frame_start, frame_end, self.dT):
+            img = self._get_image(f, frame, False)
+            if img is None:
+                return None
+            video.append(img)
+        return video
 
     def _get_flow(self, f, frame = 0):
         flow = self._get_pass(f, "flows", frame)
