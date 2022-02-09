@@ -23,6 +23,7 @@ def get_args(cmd=None):
     parser.add_argument("-o", "--outfile", type=str, help="name of outfile")
     parser.add_argument("--model", type=str, default="RAFT", help="model class")
     parser.add_argument("--checkpoint", help="checkpoint to load")
+    parser.add_argument('--iters', type=int, default=12)
 
     parser.add_argument('--gpus', type=int, nargs='+', default=[0])
     parser.add_argument('--small', action='store_true', help='use small model')
@@ -32,6 +33,7 @@ def get_args(cmd=None):
     ## dataset
     parser.add_argument("--dataset", type=str, default="tdw", help="which dataset to filter")
     parser.add_argument("--num_files", type=int, default=-1, help="how many files to search over")
+    parser.add_argument("--example", type=int, default=0, help="which example to run on")
 
     ## scoring
     parser.add_argument("--score_func", default="total_energy", help="Which score function to use")
@@ -177,6 +179,7 @@ class ExplainedAwayMotion(FrameScore):
                  segment_model,
                  thresh=0.5,
                  num_segments=32,
+                 return_segments=False,
                  **kwargs):
         super().__init__(model=model)
         self.segment_model = segment_model
@@ -184,6 +187,7 @@ class ExplainedAwayMotion(FrameScore):
         self.segment_model.eval()
         self.thresh = thresh
         self.num_segments = self.K = num_segments
+        self.return_segments = return_segments
 
     def score_prediction(self, pred_motion, pred_segments):
 
@@ -222,7 +226,7 @@ class ExplainedAwayMotion(FrameScore):
             pred_motion = pred_motion[-1]
         pred_segments = self.segment_model(*args, **kwargs) # [B,1,H,W]
         score = self.score_prediction(pred_motion, pred_segments)
-        return score.item()
+        return score.item() if not self.return_segments else self.out_segments
 
 def score_functions(name):
     funcs = dict([
@@ -352,15 +356,30 @@ class TrainingMovieFinder(object):
             except:
                 raise Exception("unable to write to %s" % self.outfile.name)
 
-## TODO
-## read in a file
-## for each movie of length (eval_len):
-## read movie into memory
-## pass image pairs through model to get preds
-## compute metric on preds
-## store data for this video
-## apply threshold and/or max
-## append to json outfile
+def compute_unexplained_motion_segments(args):
+
+    model = load_model(args)
+    dataset = get_dataset(args)
+
+    ## TODO: load a segmentation model and wrap it. KMeans is a dummy.
+    _seg_model = nn.DataParallel(KMeans(32, 50, True), device_ids=args.gpus).cuda()
+    seg_model = VideoSegmentationModel(
+        model=_seg_model, num_input_frames=getattr(_seg_model.module, 'num_input_frames', 2))
+
+    net = ExplainedAwayMotion(
+        model=model,
+        segment_model=seg_model,
+        thresh=0.5,
+        num_segments=32,
+        return_segments=True)
+
+    img1, img2 = dataset[args.example][:2]
+    img1 = img1[None].cuda()
+    img2 = img2[None].cuda()
+    new_segments = net(img1, img2, iters=args.iters, test_mode=True)
+
+    return new_segments
+
 def main(args):
 
     torch.manual_seed(1234)
@@ -384,28 +403,31 @@ def main(args):
     finder(files=None, overwrite=args.overwrite, verbose=args.verbose)
     print("Wrote training frames to %s" % args.outfile)
 
-
 if __name__ == '__main__':
     args = get_args()
     # main(args)
 
-    model = load_model(args)
-    dataset = get_dataset(args)
+    segs = compute_unexplained_motion_segments(args)
+    print("segs shape", segs.shape)
+    print("unique segment ids", torch.unique(segs))
 
-    knet = nn.DataParallel(KMeans(32, 50, True), device_ids=args.gpus).cuda()
-    seg_model = VideoSegmentationModel(model=knet, num_input_frames=1)
+    # model = load_model(args)
+    # dataset = get_dataset(args)
 
-    ex = 3
-    img1, img2, _, _ = dataset[ex]
-    img1 = img1[None].cuda()
-    img2 = img2[None].cuda()
-    segs = seg_model(img1)
+    # knet = nn.DataParallel(KMeans(32, 50, True), device_ids=args.gpus).cuda()
+    # seg_model = VideoSegmentationModel(model=knet, num_input_frames=1)
 
-    print(segs.shape, segs.dtype)
+    # ex = 3
+    # img1, img2, _, _ = dataset[ex]
+    # img1 = img1[None].cuda()
+    # img2 = img2[None].cuda()
+    # segs = seg_model(img1)
 
-    explain_net = ExplainedAwayMotion(model, seg_model)
-    score = explain_net(img1, img2, test_mode=True, iters=12)
-    print(score)
+    # print(segs.shape, segs.dtype)
+
+    # explain_net = ExplainedAwayMotion(model, seg_model)
+    # score = explain_net(img1, img2, test_mode=True, iters=12)
+    # print(score)
 
     # torch.manual_seed(1234)
     # np.random.seed(1234)

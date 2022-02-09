@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from utils.utils import coords_grid
 
 class KMeans(nn.Module):
+    num_input_frames = 1
     def __init__(self, num_clusters, num_iters=50, append_coordinates=True):
         super().__init__()
         self.num_clusters = self.K = num_clusters
