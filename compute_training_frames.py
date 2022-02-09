@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import transforms
 from tqdm import tqdm
 
 import datasets
@@ -175,32 +176,51 @@ class ExplainedAwayMotion(FrameScore):
                  model,
                  segment_model,
                  thresh=0.5,
+                 num_segments=32,
                  **kwargs):
         super().__init__(model=model)
         self.segment_model = segment_model
         self.segment_model.cuda()
         self.segment_model.eval()
         self.thresh = thresh
+        self.num_segments = self.K = num_segments
 
     def score_prediction(self, pred_motion, pred_segments):
-        ## get the motion segments by thresholding
+
+        B = pred_segments.shape[0]
+        size = pred_segments.shape[-2:]
+        R = transforms.Resize(size)
+
+        ## get the motion segment by thresholding
+        motion_seg = (R(pred_motion).square().sum(-3).sqrt() > self.thresh).float()
 
         ## get the static segments
+        static_segs = F.one_hot(pred_segments, self.K).float()
 
         ## find the segment that overlaps most with the motion segments
-
+        overlaps = (motion_seg[...,None] * static_segs).sum(dim=(-3,-2))
+        best_overlaps = overlaps.argmax(-1).long() # [B]
+        b_inds = torch.arange(B, dtype=torch.long, device=best_overlaps.device)
+        inds = torch.stack([
+            b_inds[:,None],
+            best_overlaps[:,None]], 0)
+        explained = static_segs.permute(0,3,1,2)[list(inds)][:,0].long() # [B,H,W]
         ## "explain away" by setting remaining pixels to a new value
-        print("flwo", pred_motion.shape, pred_motion.dtype)
-        print("segs", pred_segments.shape, pred_segments.dtype)
+        unexplained = (motion_seg.long() - explained).clamp(min=0)
+        score = unexplained.float().mean()
 
-        return pred_motion.abs().mean()
+        self.out_segments = unexplained + 2 * explained
+        self.motion_segments = motion_seg
+        self.static_segments = pred_segments
+
+        return score
 
     def forward(self, *args, **kwargs):
 
         pred_motion = self.model(*args, **kwargs)
         if isinstance(pred_motion, (list, tuple)):
             pred_motion = pred_motion[-1]
-        pred_segments = self.segment_model(*args, **kwargs)[:,None] # [B,1,H,W]
+        pred_segments = self.segment_model(*args, **kwargs) # [B,1,H,W]
         score = self.score_prediction(pred_motion, pred_segments)
         return score.item()
 
@@ -379,7 +399,7 @@ if __name__ == '__main__':
     img1, img2, _, _ = dataset[ex]
     img1 = img1[None].cuda()
     img2 = img2[None].cuda()
-    segs = seg_model(img2)
+    segs = seg_model(img1)
 
     print(segs.shape, segs.dtype)
 
