@@ -19,6 +19,11 @@ import os.path as osp
 from utils import frame_utils
 from utils.augmentor import FlowAugmentor, SparseFlowAugmentor
 
+## to wrap
+from dorsalventral.data.robonet import (RobonetDataset,
+                                        ROBONET_DIR,
+                                        get_robot_names)
+
 import kornia.color
 
 def rgb_to_xy_flows(flows, to_image_coordinates=True, to_sampling_grid=False):
@@ -488,6 +493,17 @@ class TdwFlowDataset(FlowDataset):
         to_tensor = lambda x: torch.from_numpy(x).permute(2, 0, 1).float()
 
         return (to_tensor(img1), to_tensor(img2), to_tensor(flow), torch.from_numpy(valid).float())
+
+class RobonetFlowDataset(RobonetDataset):
+
+    all_robots = get_robot_names()
+
+    def __getitem__(self, idx):
+
+        data_dict = super().__getitem__(idx)
+        img1, img2 = data_dict['images'][:2].split([1,1], 0)
+        return img1[0].float(), img2[0].float()
+
 
 def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
     """ Create the data loader for the corresponding trainign set """

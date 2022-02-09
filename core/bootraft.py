@@ -24,8 +24,7 @@ class BootRaft(nn.Module):
     def forward(self, image1, image2, iters=12, flow_init=None, upsample=True, test_mode=False):
 
         x = torch.stack([image1, image2], 1) # [B,2,3,H,W] <torch.float32>
-        if x.dtype != torch.uint8:
-            x = x.float() / 255.0
+        x = (x / 255.) # our models expect uint8 in [0,255]
         x = self.encoder(x)
 
         ## set num iters
