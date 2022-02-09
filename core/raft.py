@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from update import BasicUpdateBlock, SmallUpdateBlock
+from update import BasicUpdateBlock, SmallUpdateBlock, FlowHead
 from extractor import BasicEncoder, SmallEncoder
 from corr import CorrBlock, AlternateCorrBlock
 from utils.utils import bilinear_sampler, coords_grid, upflow8
@@ -55,6 +55,8 @@ class RAFT(nn.Module):
             self.cnet = BasicEncoder(output_dim=hdim+cdim, norm_fn='batch', dropout=args.dropout)
             self.update_block = BasicUpdateBlock(self.args, hidden_dim=hdim)
 
+        self.classifier_head = nn.Sequential()
+
     def freeze_bn(self):
         for m in self.modules():
             if isinstance(m, nn.BatchNorm2d):
@@ -71,19 +73,19 @@ class RAFT(nn.Module):
 
     def upsample_flow(self, flow, mask):
         """ Upsample flow field [H/8, W/8, 2] -> [H, W, 2] using convex combination """
-        N, _, H, W = flow.shape
+        N, C, H, W = flow.shape
         mask = mask.view(N, 1, 9, 8, 8, H, W)
         mask = torch.softmax(mask, dim=2)
 
         up_flow = F.unfold(8 * flow, [3,3], padding=1)
-        up_flow = up_flow.view(N, 2, 9, 1, 1, H, W)
+        up_flow = up_flow.view(N, C, 9, 1, 1, H, W)
 
         up_flow = torch.sum(mask * up_flow, dim=2)
         up_flow = up_flow.permute(0, 1, 4, 2, 5, 3)
-        return up_flow.reshape(N, 2, 8*H, 8*W)
+        return up_flow.reshape(N, C, 8*H, 8*W)
 
 
-    def forward(self, image1, image2, iters=12, flow_init=None, upsample=True, test_mode=False):
+    def forward(self, image1, image2, iters=12, flow_init=None, upsample=True, test_mode=False, output_hidden=False):
         """ Estimate optical flow between pair of frames """
 
         image1 = 2 * (image1 / 255.0) - 1.0
@@ -134,10 +136,12 @@ class RAFT(nn.Module):
             coords1 = coords1 + delta_flow
 
             # upsample predictions
-            if up_mask is None:
-                flow_up = upflow8(coords1 - coords0)
+            if output_hidden:
+                flow_up = self.upsample_flow(self.classifier_head(net), up_mask)
+            elif up_mask is None:
+                flow_up = upflow8(self.classifier_head(coords1 - coords0))
             else:
-                flow_up = self.upsample_flow(coords1 - coords0, up_mask)
+                flow_up = self.upsample_flow(self.classifier_head(coords1 - coords0), up_mask)
 
             flow_predictions.append(flow_up)
 
@@ -145,3 +149,15 @@ class RAFT(nn.Module):
             return coords1 - coords0, flow_up
 
         return flow_predictions
+
+class ThingsClassifier(RAFT):
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.classifier_head = FlowHead(input_dim=self.hidden_dim, out_dim=1)
+
+
+    def forward(self, *args, **kwargs):
+        ## static model
+        img1, img2 = args[:2]
+        return super().forward(img1, img1, *args[2:], **kwargs, output_hidden=True)

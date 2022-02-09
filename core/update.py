@@ -4,10 +4,10 @@ import torch.nn.functional as F
 
 
 class FlowHead(nn.Module):
-    def __init__(self, input_dim=128, hidden_dim=256):
+    def __init__(self, input_dim=128, hidden_dim=256, out_dim=2):
         super(FlowHead, self).__init__()
         self.conv1 = nn.Conv2d(input_dim, hidden_dim, 3, padding=1)
-        self.conv2 = nn.Conv2d(hidden_dim, 2, 3, padding=1)
+        self.conv2 = nn.Conv2d(hidden_dim, out_dim, 3, padding=1)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
@@ -47,14 +47,14 @@ class SepConvGRU(nn.Module):
         hx = torch.cat([h, x], dim=1)
         z = torch.sigmoid(self.convz1(hx))
         r = torch.sigmoid(self.convr1(hx))
-        q = torch.tanh(self.convq1(torch.cat([r*h, x], dim=1)))        
+        q = torch.tanh(self.convq1(torch.cat([r*h, x], dim=1)))
         h = (1-z) * h + z * q
 
         # vertical
         hx = torch.cat([h, x], dim=1)
         z = torch.sigmoid(self.convz2(hx))
         r = torch.sigmoid(self.convr2(hx))
-        q = torch.tanh(self.convq2(torch.cat([r*h, x], dim=1)))       
+        q = torch.tanh(self.convq2(torch.cat([r*h, x], dim=1)))
         h = (1-z) * h + z * q
 
         return h
@@ -134,6 +134,3 @@ class BasicUpdateBlock(nn.Module):
         # scale mask to balence gradients
         mask = .25 * self.mask(net)
         return net, mask, delta_flow
-
-
-

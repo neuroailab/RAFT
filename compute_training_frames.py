@@ -98,6 +98,12 @@ def get_dataset(args):
         dataset = datasets.TdwFlowDataset(
             aug_params=None,
             split='training')
+    elif args.dataset == 'robonet_sampler':
+        dataset = datasets.RobonetFlowDataset(
+            root=datasets.ROBONET_DIR,
+            dataset_names=args.dataset_names,
+            sequence_length=2,
+            train=True)
     else:
         raise ValueError("%s is not a recognized dataset" % args.dataset)
 

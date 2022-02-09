@@ -15,7 +15,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 
 from torch.utils.data import DataLoader
-from raft import RAFT
+from raft import RAFT, ThingsClassifier
 from bootraft import BootRaft
 import evaluate
 import datasets
@@ -45,7 +45,7 @@ SUM_FREQ = 10
 VAL_FREQ = 5000
 
 
-def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW):
+def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_flow=0.5, pos_weight=1.0):
     """ Loss function defined over sequence of flow predictions """
 
     n_predictions = len(flow_preds)
@@ -55,9 +55,19 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW):
     mag = torch.sum(flow_gt**2, dim=1).sqrt()
     valid = (valid >= 0.5) & (mag < max_flow)
 
+    if flow_preds[-1].shape[-3] == 1:
+        flow_gt = (mag[:,None] > min_flow).float()
+        pos_weight = torch.tensor([pos_weight], device=flow_gt.device)
+        loss_cls = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='none')
+        loss_fn = lambda logits, labels: loss_cls(logits, labels)
+    else:
+        loss_fn = lambda logits, labels: (logits - labels).abs()
+        assert flow_preds[-1].shape[-3] == 2, flow_preds[-1].shape
+
     for i in range(n_predictions):
         i_weight = gamma**(n_predictions - i - 1)
-        i_loss = (flow_preds[i] - flow_gt).abs()
+        # i_loss = (flow_preds[i] - flow_gt).abs()
+        i_loss = loss_fn(flow_preds[i], flow_gt)
         flow_loss += i_weight * (valid[:, None] * i_loss).mean()
 
     epe = torch.sum((flow_preds[-1] - flow_gt)**2, dim=1).sqrt()
@@ -71,6 +81,9 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW):
     }
 
     return flow_loss, metrics
+
+def thingness_loss(thingness_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW):
+    pass
 
 
 def count_parameters(model):
@@ -139,13 +152,17 @@ def train(args):
     if args.model.lower() == 'bootraft':
         model_cls = BootRaft
         print("used BOOTRAFT")
+    elif args.model.lower() == 'thingness':
+        model_cls = ThingsClassifier
+        print("used ThingnessClassifier")
     else:
         model_cls = RAFT
     model = nn.DataParallel(model_cls(args), device_ids=args.gpus)
     print("Parameter Count: %d" % count_parameters(model))
 
     if args.restore_ckpt is not None:
-        model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
+        did_load = model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
+        print(did_load)
 
     model.cuda()
     model.train()
