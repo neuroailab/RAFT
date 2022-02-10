@@ -38,7 +38,7 @@ class BootRaft(nn.Module):
             return (self.decoder.delta_coords, x)
         return x
 
-CentroidTarget = partial(targets.CentroidTarget, normalize=True, return_masks=True)
+CentroidMaskTarget = partial(targets.CentroidTarget, normalize=True, return_masks=True)
 
 if __name__ == '__main__':
 

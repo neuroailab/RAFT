@@ -541,6 +541,17 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             training_frames=args.training_frames
         )
 
+    if args.stage == 'robonet':
+        print("dataset names", args.dataset_names)
+        train_dataset = RobonetFlowDataset(
+            root=ROBONET_DIR,
+            dataset_names=args.dataset_names,
+            sequence_length=2,
+            min_start_frame=0,
+            imsize=None,
+            train=True
+        )
+
     if args.stage == 'chairs':
         if args.no_aug:
             aug_params = None

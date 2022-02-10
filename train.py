@@ -16,7 +16,7 @@ import torch.nn.functional as F
 
 from torch.utils.data import DataLoader
 from raft import RAFT, ThingsClassifier, CentroidRegressor
-from bootraft import BootRaft, CentroidTarget
+from bootraft import BootRaft, CentroidMaskTarget
 import evaluate
 import datasets
 
@@ -44,6 +44,9 @@ MAX_FLOW = 400
 SUM_FREQ = 10
 VAL_FREQ = 5000
 
+# datasets without supervision
+SELFSUP_DATASETS = ['robonet', 'dsr']
+
 
 def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_flow=0.5, pos_weight=1.0):
     """ Loss function defined over sequence of flow predictions """
@@ -53,7 +56,10 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
 
     # exlude invalid pixels and extremely large diplacements
     mag = torch.sum(flow_gt**2, dim=1).sqrt()
-    valid = (valid >= 0.5) & (mag < max_flow)
+    if valid is None:
+        valid = (mag < max_flow)
+    else:
+        valid = (valid >= 0.5) & (mag < max_flow)
 
     if flow_preds[-1].shape[-3] == 1:
         flow_gt = (mag[:,None] > min_flow).float()
@@ -70,38 +76,47 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
         i_loss = loss_fn(flow_preds[i], flow_gt)
         flow_loss += i_weight * (valid[:, None] * i_loss).mean()
 
-    epe = torch.sum((flow_preds[-1] - flow_gt)**2, dim=1).sqrt()
-    epe = epe.view(-1)[valid.view(-1)]
+    # epe = torch.sum((flow_preds[-1] - flow_gt)**2, dim=1).sqrt()
+    # epe = epe.view(-1)[valid.view(-1)]
 
     metrics = {
         'loss': flow_loss,
-        'epe': epe.mean().item(),
-        '1px': (epe < 1).float().mean().item(),
-        '3px': (epe < 3).float().mean().item(),
-        '5px': (epe < 5).float().mean().item(),
+        # 'epe': epe.mean().item(),
+        # '1px': (epe < 1).float().mean().item(),
+        # '3px': (epe < 3).float().mean().item(),
+        # '5px': (epe < 5).float().mean().item(),
     }
 
     return flow_loss, metrics
 
 
-def centroid_loss(dcent_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_flow=0.5):
+def centroid_loss(dcent_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_flow=0.5, scale_to_pixels=False):
 
     n_predictions = len(dcent_preds)
     flow_loss = 0.0
 
     # exlude invalid pixels and extremely large diplacements
     mag = torch.sum(flow_gt**2, dim=1).sqrt()
-    valid = (valid >= 0.5) & (mag < max_flow)
-    CT = CentroidTarget(thresh=min_flow)
+    if valid is None:
+        valid = (mag < max_flow)
+    else:
+        valid = (valid >= 0.5) & (mag < max_flow)
+    CT = CentroidMaskTarget(thresh=min_flow)
     centroid, mask = CT(mag[:,None].float()) # centroid
     coords = CT.coords_grid(batch=1, size=mask.shape[-2:], device=centroid.device,
                             normalize=True, to_xy=False)
     target = centroid[...,None] * mask - coords
+    if scale_to_pixels:
+        H,W = target.shape[-2:]
+        target = target * torch.tensor([(H-1.)/2.,(W-1.)/2.], device=target.device).float().view(1,2,1,1)
     num_px = mask.detach().sum(dim=(-2,-1)).clamp(min=1.0)
 
     for i in range(n_predictions):
         i_weight = gamma**(n_predictions - i - 1)
-        i_loss = (dcent_preds[i] - target).square()
+        if scale_to_pixels:
+            i_loss = (dcent_preds[i] - target).abs()
+        else:
+            i_loss = (dcent_preds[i] - target).square()
         i_loss = (i_loss * mask).sum(dim=(-2,-1)) / num_px
         flow_loss += i_weight * i_loss.mean()
 
@@ -173,7 +188,7 @@ def train(args):
 
     if args.model.lower() == 'bootraft':
         model_cls = BootRaft
-        print("used BOOTRAFT")
+        print("used BootRaft")
     elif args.model.lower() == 'thingness':
         model_cls = ThingsClassifier
         print("used ThingnessClassifier")
@@ -182,6 +197,7 @@ def train(args):
         print("used CentroidRegressor")
     else:
         model_cls = RAFT
+        print("used RAFT")
     model = nn.DataParallel(model_cls(args), device_ids=args.gpus)
     print("Parameter Count: %d" % count_parameters(model))
 
@@ -192,11 +208,17 @@ def train(args):
     model.cuda()
     model.train()
 
-    if args.stage not in ['chairs', 'tdw']:
+    if args.stage not in ['chairs', 'tdw', 'robonet']:
         model.module.freeze_bn()
 
     ## load a teacher model
     selfsup = False
+
+    ## if training on a dataset without gt flow, we __must__ self-supervise
+    if args.stage in SELFSUP_DATASETS:
+        selfsup = True
+        assert args.teacher_ckpt is not None, "You're training on %s that has no gt flow! Pass a teacher checkpoint" % args.stage
+
     if args.teacher_ckpt is not None:
         selfsup = True
         teacher = nn.DataParallel(RAFT(args), device_ids=args.gpus)
@@ -222,7 +244,11 @@ def train(args):
 
         for i_batch, data_blob in enumerate(train_loader):
             optimizer.zero_grad()
-            image1, image2, flow, valid = [x.cuda() for x in data_blob]
+            if selfsup:
+                image1, image2 = [x.cuda() for x in data_blob[:2]]
+                valid = None
+            else:
+                image1, image2, flow, valid = [x.cuda() for x in data_blob]
 
             if args.add_noise:
                 stdv = np.random.uniform(0.0, 5.0)
@@ -234,7 +260,7 @@ def train(args):
                 _, flow = teacher(image1, image2, iters=args.teacher_iters, test_mode=True)
 
             if args.model.lower() == 'centroid':
-                loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma)
+                loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=args.scale_centroids)
             else:
                 loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma)
             scaler.scale(loss).backward()
@@ -263,7 +289,7 @@ def train(args):
                 logger.write_dict(results)
 
                 model.train()
-                if args.stage not in ['chairs', 'tdw']:
+                if args.stage not in ['chairs', 'tdw', 'robonet']:
                     model.module.freeze_bn()
 
             total_steps += 1
@@ -282,6 +308,7 @@ def get_args(cmd=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', default='raft', help="name your experiment")
     parser.add_argument('--stage', default="chairs", help="determines which dataset to use for training")
+    parser.add_argument('--dataset_names', type=str, nargs='+')
     parser.add_argument('--restore_ckpt', help="restore checkpoint")
     parser.add_argument('--small', action='store_true', help='use small model')
     parser.add_argument('--validation', type=str, nargs='+')
@@ -309,6 +336,7 @@ def get_args(cmd=None):
     parser.add_argument('--model', type=str, default='RAFT', help='Model class')
     parser.add_argument('--teacher_ckpt', help='checkpoint for a pretrained RAFT. If None, use GT')
     parser.add_argument('--teacher_iters', type=int, default=18)
+    parser.add_argument('--scale_centroids', action='store_true')
     parser.add_argument('--training_frames', help="a JSON file of frames to train from")
 
     if cmd is None:
