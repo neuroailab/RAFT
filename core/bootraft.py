@@ -1,3 +1,4 @@
+from functools import partial
 import numpy as np
 import torch
 import torch.nn as nn
@@ -37,6 +38,7 @@ class BootRaft(nn.Module):
             return (self.decoder.delta_coords, x)
         return x
 
+CentroidTarget = partial(targets.CentroidTarget, normalize=True, return_masks=True)
 
 if __name__ == '__main__':
 

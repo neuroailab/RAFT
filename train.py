@@ -15,8 +15,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 
 from torch.utils.data import DataLoader
-from raft import RAFT, ThingsClassifier
-from bootraft import BootRaft
+from raft import RAFT, ThingsClassifier, CentroidRegressor
+from bootraft import BootRaft, CentroidTarget
 import evaluate
 import datasets
 
@@ -82,9 +82,36 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
 
     return flow_loss, metrics
 
-def thingness_loss(thingness_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW):
-    pass
 
+def centroid_loss(dcent_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_flow=0.5):
+
+    n_predictions = len(dcent_preds)
+    flow_loss = 0.0
+
+    # exlude invalid pixels and extremely large diplacements
+    mag = torch.sum(flow_gt**2, dim=1).sqrt()
+    valid = (valid >= 0.5) & (mag < max_flow)
+    CT = CentroidTarget(thresh=min_flow)
+    centroid, mask = CT(mag[:,None].float()) # centroid
+    coords = CT.coords_grid(batch=1, size=mask.shape[-2:], device=centroid.device,
+                            normalize=True, to_xy=False)
+    target = centroid[...,None] * mask - coords
+    num_px = mask.detach().sum(dim=(-2,-1)).clamp(min=1.0)
+
+    # print("centroid", centroid.shape)
+    # print("mask", mask.shape)
+    # print("coords", coords.shape)
+    # print("target", target.shape)
+    # print("preds", dcent_preds[-1].shape)
+
+    for i in range(n_predictions):
+        i_weight = gamma**(n_predictions - i - 1)
+        i_loss = (dcent_preds[i] - target).square()
+        i_loss = (i_loss * mask).sum(dim=(-2,-1)) / num_px
+        flow_loss += i_weight * i_loss.mean()
+
+    metrics = {'loss': flow_loss}
+    return flow_loss, metrics
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -155,6 +182,9 @@ def train(args):
     elif args.model.lower() == 'thingness':
         model_cls = ThingsClassifier
         print("used ThingnessClassifier")
+    elif args.model.lower() == 'centroid':
+        model_cls = CentroidRegressor
+        print("used CentroidRegressor")
     else:
         model_cls = RAFT
     model = nn.DataParallel(model_cls(args), device_ids=args.gpus)
@@ -195,7 +225,10 @@ def train(args):
 
             flow_predictions = model(image1, image2, iters=args.iters)
 
-            loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma)
+            if args.model.lower() == 'centroid':
+                loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma)
+            else:
+                loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
