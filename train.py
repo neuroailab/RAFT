@@ -74,6 +74,7 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
     epe = epe.view(-1)[valid.view(-1)]
 
     metrics = {
+        'loss': flow_loss,
         'epe': epe.mean().item(),
         '1px': (epe < 1).float().mean().item(),
         '3px': (epe < 3).float().mean().item(),
@@ -97,12 +98,6 @@ def centroid_loss(dcent_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min
                             normalize=True, to_xy=False)
     target = centroid[...,None] * mask - coords
     num_px = mask.detach().sum(dim=(-2,-1)).clamp(min=1.0)
-
-    # print("centroid", centroid.shape)
-    # print("mask", mask.shape)
-    # print("coords", coords.shape)
-    # print("target", target.shape)
-    # print("preds", dcent_preds[-1].shape)
 
     for i in range(n_predictions):
         i_weight = gamma**(n_predictions - i - 1)
@@ -200,6 +195,18 @@ def train(args):
     if args.stage not in ['chairs', 'tdw']:
         model.module.freeze_bn()
 
+    ## load a teacher model
+    selfsup = False
+    if args.teacher_ckpt is not None:
+        selfsup = True
+        teacher = nn.DataParallel(RAFT(args), device_ids=args.gpus)
+        did_load = teacher.load_state_dict(torch.load(args.teacher_ckpt), strict=False)
+        print("TEACHER")
+        print(did_load)
+        teacher.cuda()
+        teacher.eval()
+        teacher.module.freeze_bn()
+
     train_loader = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, model)
 
@@ -222,8 +229,9 @@ def train(args):
                 image1 = (image1 + stdv * torch.randn(*image1.shape).cuda()).clamp(0.0, 255.0)
                 image2 = (image2 + stdv * torch.randn(*image2.shape).cuda()).clamp(0.0, 255.0)
 
-
             flow_predictions = model(image1, image2, iters=args.iters)
+            if selfsup:
+                _, flow = teacher(image1, image2, iters=args.teacher_iters, test_mode=True)
 
             if args.model.lower() == 'centroid':
                 loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma)
@@ -299,6 +307,8 @@ def get_args(cmd=None):
 
     ## model class
     parser.add_argument('--model', type=str, default='RAFT', help='Model class')
+    parser.add_argument('--teacher_ckpt', help='checkpoint for a pretrained RAFT. If None, use GT')
+    parser.add_argument('--teacher_iters', type=int, default=18)
     parser.add_argument('--training_frames', help="a JSON file of frames to train from")
 
     if cmd is None:
