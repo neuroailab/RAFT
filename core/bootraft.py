@@ -1,13 +1,65 @@
 from functools import partial
+import copy
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from raft import RAFT
+from raft import RAFT, CentroidRegressor, ThingsClassifier
 import dorsalventral.models.bootnet as bootnet
 import dorsalventral.models.layers as layers
 import dorsalventral.models.targets as targets
+
+import sys
+
+def get_args(cmd=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--name', default='raft', help="name your experiment")
+    parser.add_argument('--stage', default="chairs", help="determines which dataset to use for training")
+    parser.add_argument('--dataset_names', type=str, nargs='+')
+    parser.add_argument('--restore_ckpt', help="restore checkpoint")
+    parser.add_argument('--small', action='store_true', help='use small model')
+    parser.add_argument('--validation', type=str, nargs='+')
+    parser.add_argument('--val_freq', type=int, default=5000, help='validation and checkpoint frequency')
+
+    parser.add_argument('--lr', type=float, default=0.00002)
+    parser.add_argument('--num_steps', type=int, default=100000)
+    parser.add_argument('--batch_size', type=int, default=6)
+    parser.add_argument('--image_size', type=int, nargs='+', default=[384, 512])
+    parser.add_argument('--gpus', type=int, nargs='+', default=[0,1])
+    parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
+
+    parser.add_argument('--iters', type=int, default=12)
+    parser.add_argument('--wdecay', type=float, default=.00005)
+    parser.add_argument('--epsilon', type=float, default=1e-8)
+    parser.add_argument('--clip', type=float, default=1.0)
+    parser.add_argument('--dropout', type=float, default=0.0)
+    parser.add_argument('--gamma', type=float, default=0.8, help='exponential weighting')
+    parser.add_argument('--add_noise', action='store_true')
+    parser.add_argument('--no_aug', action='store_true')
+    parser.add_argument('--full_playroom', action='store_true')
+    parser.add_argument('--static_coords', action='store_true')
+    parser.add_argument('--max_frame', type=int, default=5)
+
+    ## model class
+    parser.add_argument('--model', type=str, default='RAFT', help='Model class')
+    parser.add_argument('--teacher_ckpt', help='checkpoint for a pretrained RAFT. If None, use GT')
+    parser.add_argument('--teacher_iters', type=int, default=18)
+    parser.add_argument('--scale_centroids', action='store_true')
+    parser.add_argument('--training_frames', help="a JSON file of frames to train from")
+
+    if cmd is None:
+        args = parser.parse_args()
+        print(args)
+    else:
+        args = parser.parse_args(cmd)
+    return args
+
+def set_args(adict={}):
+    args = get_args("")
+    for k,v in adict.items():
+        args.__setattr__(k,v)
+    return args
 
 class BootRaft(nn.Module):
     """Wraps bootnet implementatino of RAFT"""
@@ -44,6 +96,8 @@ class KpPrior(nn.Module):
     def __init__(self,
                  centroid_model,
                  thingness_model=None,
+                 centroid_kwargs={'iters': 12},
+                 thingness_kwargs={'iters': 6},
                  thingness_nonlinearity=torch.sigmoid,
                  thingness_thresh=0.1,
                  resolution=8,
@@ -52,13 +106,19 @@ class KpPrior(nn.Module):
                  normalize_coordinates=True
     ):
         super().__init__()
-        self.centroid_model = centroid_model
+        self.centroid_model = self._set_model(
+            centroid_model, (CentroidRegressor, {}))
         self.normalize_coordinates = normalize_coordinates
 
         if thingness_model is not None:
-            self.thingness_model = thingness_model
+            self.thingness_model = self._set_model(
+                thingness_model, (ThingsClassifier, {}))
         else:
             self.thingness_model = None
+
+        ## kwargs for model calls
+        self._centroid_kwargs = copy.deepcopy(centroid_kwargs)
+        self._thingness_kwargs = copy.deepcopy(thingness_kwargs)
 
         self.thingness_nonlinearity = thingness_nonlinearity or nn.Identity()
         self.thingness_thresh = thingness_thresh
@@ -68,11 +128,23 @@ class KpPrior(nn.Module):
         self.randomize_background = randomize_background
         self.to_nodes = to_nodes
 
+    def _set_model(self, model, config=None):
+        if isinstance(model, nn.Module):
+            return model
+        assert isinstance(model, str), model
+        model_cls, model_params = config
+        model_params['args'] = set_args()
+        m = nn.DataParallel(model_cls(**model_params))
+        m.load_state_dict(torch.load(model), strict=False)
+        return m
+
     def _get_thingness_mask(self, *args, **kwargs):
         if self.thingness_model is None:
             return None
 
-        thingness_mask = self.thingness_model(*args, **kwargs)
+        call_params = copy.deepcopy(kwargs)
+        call_params.update(self._thingness_kwargs)
+        thingness_mask = self.thingness_model(*args, **call_params)
         if isinstance(thingness_mask, (list, tuple)):
             thingness_mask = thingness_mask[-1]
 
@@ -109,7 +181,10 @@ class KpPrior(nn.Module):
         return kp_prior
 
     def forward(self, *args, **kwargs):
-        dcentroid_preds = self.centroid_model(*args, **kwargs)
+
+        call_params = copy.deepcopy(kwargs)
+        call_params.update(self._centroid_kwargs)
+        dcentroid_preds = self.centroid_model(*args, **call_params)
         if isinstance(dcentroid_preds, (list, tuple)):
             dcentroid_preds = dcentroid_preds[-1]
 
