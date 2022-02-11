@@ -172,3 +172,54 @@ class CentroidRegressor(RAFT):
         ## static model
         img1, img2 = args[:2]
         return super().forward(img1, img2, *args[2:], **kwargs, output_hidden=True)
+
+class KpPrior(nn.Module):
+    def __init__(self,
+                 centroid_model,
+                 thingness_model=None,
+                 thingness_nonlinearity=torch.sigmoid,
+                 thingness_thresh=0.1,
+                 resolution=8):
+        super().__init__()
+        self.centroid_model = centroid_model
+        self.centroid_model.eval()
+
+        if thingness_model is not None:
+            self.thingness_model = thingness_model
+            self.thingness_model.eval()
+        else:
+            self.thingness_model = None
+
+        self.thingness_nonlinearity = thingness_nonlinearity or nn.Identity()
+        self.thingness_thresh = thingness_thresh
+
+        self.resolution = resolution
+
+    def _get_thingness_mask(self, *args, **kwargs):
+        if self.thingness_model is None:
+            return None
+
+        thingness_mask = self.thingness_model(*args, **kwargs)
+        if isinstance(thingness_mask, (list, tuple)):
+            thingness_mask = thingness_mask[-1]
+
+        thingness_mask = self.thingness_nonlinearity(thingness_mask)
+        if self.thingness_thresh is not None:
+            thingness_mask = (thingness_mask > self.thingness_thresh).float()
+
+        return thingness_mask
+
+    def forward(self, *args, **kwargs):
+        dcentroid_preds = self.centroid_model(*args, **kwargs)
+        if isinstance(centroid_outputs, (list, tuple)):
+            dcentroid_preds = centroid_outputs[-1]
+
+        thingness_mask = self._get_thingness_mask(*args, **kwargs)
+
+        kp_prior = self.get_kp_prior(
+            dcentroid_preds,
+            thingness_mask,
+            self.resolution
+        )
+
+        return kp_prior

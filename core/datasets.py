@@ -502,6 +502,8 @@ class RobonetFlowDataset(RobonetDataset):
                  dataset_names=all_robots,
                  sequence_length=2,
                  *args, **kwargs):
+        if dataset_names is None:
+            dataset_names = self.all_robots
         super().__init__(dataset_dir=root,
                          dataset_names=dataset_names,
                          sequence_length=sequence_length,
@@ -549,7 +551,8 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             sequence_length=2,
             min_start_frame=0,
             imsize=None,
-            train=True
+            train=True,
+            filter_imsize=args.image_size
         )
 
     if args.stage == 'chairs':

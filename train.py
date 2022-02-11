@@ -113,10 +113,7 @@ def centroid_loss(dcent_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min
 
     for i in range(n_predictions):
         i_weight = gamma**(n_predictions - i - 1)
-        if scale_to_pixels:
-            i_loss = (dcent_preds[i] - target).abs()
-        else:
-            i_loss = (dcent_preds[i] - target).square()
+        i_loss = (dcent_preds[i] - target).square()
         i_loss = (i_loss * mask).sum(dim=(-2,-1)) / num_px
         flow_loss += i_weight * i_loss.mean()
 
@@ -236,7 +233,7 @@ def train(args):
     scaler = GradScaler(enabled=args.mixed_precision)
     logger = Logger(model, scheduler)
 
-    VAL_FREQ = 5000
+    VAL_FREQ = args.val_freq
     add_noise = True
 
     should_keep_training = True
@@ -312,6 +309,7 @@ def get_args(cmd=None):
     parser.add_argument('--restore_ckpt', help="restore checkpoint")
     parser.add_argument('--small', action='store_true', help='use small model')
     parser.add_argument('--validation', type=str, nargs='+')
+    parser.add_argument('--val_freq', type=int, default=5000, help='validation and checkpoint frequency')
 
     parser.add_argument('--lr', type=float, default=0.00002)
     parser.add_argument('--num_steps', type=int, default=100000)

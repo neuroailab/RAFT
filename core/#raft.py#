@@ -173,4 +173,3 @@ class CentroidRegressor(RAFT):
         img1, img2 = args[:2]
         return super().forward(img1, img2, *args[2:], **kwargs, output_hidden=True)
 
-
