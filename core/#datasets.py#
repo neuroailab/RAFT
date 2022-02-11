@@ -502,17 +502,23 @@ class RobonetFlowDataset(RobonetDataset):
                  dataset_names=all_robots,
                  sequence_length=2,
                  *args, **kwargs):
+        if dataset_names is None:
+            dataset_names = self.all_robots
         super().__init__(dataset_dir=root,
                          dataset_names=dataset_names,
                          sequence_length=sequence_length,
                          *args, **kwargs)
-        
+
 
     def __getitem__(self, idx):
 
         data_dict = super().__getitem__(idx)
         img1, img2 = data_dict['images'][:2].split([1,1], 0)
         return img1[0].float(), img2[0].float()
+
+    def get_video(self, f, frame, num_frames = 2):
+        meta = self.meta_data_frame[self.meta_data_frame.index == Path(str(f.filename)).name]
+        
 
 
 def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
@@ -539,6 +545,18 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             min_start_frame=5,
             max_start_frame=(args.max_frame if args.max_frame > 0 else None),
             training_frames=args.training_frames
+        )
+
+    if args.stage == 'robonet':
+        print("dataset names", args.dataset_names)
+        train_dataset = RobonetFlowDataset(
+            root=ROBONET_DIR,
+            dataset_names=args.dataset_names,
+            sequence_length=2,
+            min_start_frame=0,
+            imsize=None,
+            train=True,
+            filter_imsize=args.image_size
         )
 
     if args.stage == 'chairs':

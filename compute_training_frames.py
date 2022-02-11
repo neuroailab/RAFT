@@ -107,7 +107,7 @@ def get_dataset(args):
     else:
         raise ValueError("%s is not a recognized dataset" % args.dataset)
 
-    assert hasattr(dataset, 'get_video'), "Dataset object must have a method 'get_image_pair'"
+    assert hasattr(dataset, 'get_video'), "Dataset object must have a method 'get_video'"
     assert hasattr(dataset, 'files'), "Dataset must have a list of files"
 
     print("Searching over %d files" % len(dataset.files))
@@ -262,7 +262,9 @@ class TrainingMovieFinder(object):
                  video_length: int = 2,
                  num_files: int = None,
                  score_config=(TotalEnergyScore, {}),
-                 model_call_kwargs = {'iters': 12, 'test_mode': True}
+                 model_call_kwargs = {'iters': 12, 'test_mode': True},
+                 filter_mode='argmax',
+                 filter_kwargs={'thresh': 0.015}
     ):
         self.model = model
         self.model_call_kwargs = model_call_kwargs
@@ -278,6 +280,9 @@ class TrainingMovieFinder(object):
 
         ## set the score fn
         self.set_score_fn(score_config)
+
+        ## set the filter mode
+        self.set_filter_mode(filter_mode, **filter_kwargs)
 
     def set_score_fn(self, config):
         if hasattr(config, 'keys'):
@@ -297,6 +302,15 @@ class TrainingMovieFinder(object):
 
         self._score_offset = getattr(self.score_fn, 'frame_offset', 0)
 
+    def set_filter_mode(self, mode, **kwargs):
+        if mode == 'argmax':
+            self.filter_scores = lambda scores: [int(np.argmax(np.array([scores[k] for k in sorted(scores.keys())])))]
+        elif mode == 'thresh':
+            thresh = kwargs.get('thresh', 0.01)
+            self.filter_scores = lambda scores: sorted([int(k) for k,v in scores.items() if v >= thresh])
+        else:
+            raise ValueError("%s is not a valid filtering mode" % mode)
+
     def _score_video(self, video):
         n_frames = len(video)
         to_tensor = lambda x: torch.from_numpy(x).permute(2, 0, 1)[None].cuda()
@@ -304,10 +318,6 @@ class TrainingMovieFinder(object):
             img1, img2 = to_tensor(video[i]), to_tensor(video[i+1])
             score = self.score_fn(img1, img2, **self.model_call_kwargs)
         return score
-
-    def filter_scores(self, scores):
-        # return sorted([k for k,v in scores.items() if v > 20])
-        return [int(np.argmax(np.array([scores[k] for k in sorted(scores.keys())])))]
 
     def filter_video(self, file_idx):
 

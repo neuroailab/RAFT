@@ -218,8 +218,11 @@ def train(args):
 
     if args.teacher_ckpt is not None:
         selfsup = True
+        _small = args.small
+        args.small = False
         teacher = nn.DataParallel(RAFT(args), device_ids=args.gpus)
         did_load = teacher.load_state_dict(torch.load(args.teacher_ckpt), strict=False)
+        args.small = _small
         print("TEACHER")
         print(did_load)
         teacher.cuda()
