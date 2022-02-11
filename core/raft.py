@@ -30,7 +30,8 @@ class RAFT(nn.Module):
             self.hidden_dim = hdim = 96
             self.context_dim = cdim = 64
             args.corr_levels = 4
-            args.corr_radius = 3
+            # args.corr_radius = 3
+            args.corr_radius = 4
 
         else:
             self.hidden_dim = hdim = 128

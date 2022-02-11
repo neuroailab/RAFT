@@ -103,13 +103,20 @@ class SmallUpdateBlock(nn.Module):
         self.gru = ConvGRU(hidden_dim=hidden_dim, input_dim=82+64)
         self.flow_head = FlowHead(hidden_dim, hidden_dim=128)
 
+        self.mask = nn.Sequential(
+            nn.Conv2d(hidden_dim, 256, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 64*9, 1, padding=0))
+
     def forward(self, net, inp, corr, flow):
         motion_features = self.encoder(flow, corr)
         inp = torch.cat([inp, motion_features], dim=1)
         net = self.gru(net, inp)
         delta_flow = self.flow_head(net)
 
-        return net, None, delta_flow
+        mask = 0.25 * self.mask(net)
+
+        return net, mask, delta_flow
 
 class BasicUpdateBlock(nn.Module):
     def __init__(self, args, hidden_dim=128, input_dim=128):

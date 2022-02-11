@@ -262,7 +262,7 @@ def train(args):
             if args.model.lower() == 'centroid':
                 loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=args.scale_centroids)
             else:
-                loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma)
+                loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma, pos_weight=args.pos_weight)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
@@ -327,6 +327,7 @@ def get_args(cmd=None):
     parser.add_argument('--clip', type=float, default=1.0)
     parser.add_argument('--dropout', type=float, default=0.0)
     parser.add_argument('--gamma', type=float, default=0.8, help='exponential weighting')
+    parser.add_argument('--pos_weight', type=float, default=1.0, help='weight for positive bce samples')
     parser.add_argument('--add_noise', action='store_true')
     parser.add_argument('--no_aug', action='store_true')
     parser.add_argument('--full_playroom', action='store_true')

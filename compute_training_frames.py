@@ -32,11 +32,17 @@ def get_args(cmd=None):
 
     ## dataset
     parser.add_argument("--dataset", type=str, default="tdw", help="which dataset to filter")
+    parser.add_argument('--dataset_names', type=str, nargs='+')
+
     parser.add_argument("--num_files", type=int, default=-1, help="how many files to search over")
     parser.add_argument("--example", type=int, default=0, help="which example to run on")
 
     ## scoring
     parser.add_argument("--score_func", default="total_energy", help="Which score function to use")
+
+    ## filtering
+    parser.add_argument("--filter_mode", default="argmax", help="How to filter frames by score")
+    parser.add_argument("--filter_thresh", type=float, default=0.015, help="Keep frames above this thresh")
 
     ## main
     parser.add_argument("--overwrite", action="store_true", help="overwrite the file if it exists")
@@ -97,6 +103,7 @@ def get_dataset(args):
     if args.dataset == 'tdw':
         dataset = datasets.TdwFlowDataset(
             aug_params=None,
+            dataset_names=(args.dataset_names or ['model_split_4']),
             split='training')
     elif args.dataset == 'robonet_sampler':
         dataset = datasets.RobonetFlowDataset(
@@ -413,7 +420,9 @@ def main(args):
         outfile=args.outfile,
         video_length=getattr(model, 'num_input_frames', 2),
         num_files=args.num_files,
-        score_config=score_config
+        score_config=score_config,
+        filter_mode=args.filter_mode,
+        filter_kwargs={'thresh': args.filter_thresh}
     )
 
     finder(files=None, overwrite=args.overwrite, verbose=args.verbose)
@@ -421,11 +430,11 @@ def main(args):
 
 if __name__ == '__main__':
     args = get_args()
-    # main(args)
+    main(args)
 
-    segs = compute_unexplained_motion_segments(args)
-    print("segs shape", segs.shape)
-    print("unique segment ids", torch.unique(segs))
+    # segs = compute_unexplained_motion_segments(args)
+    # print("segs shape", segs.shape)
+    # print("unique segment ids", torch.unique(segs))
 
     # model = load_model(args)
     # dataset = get_dataset(args)

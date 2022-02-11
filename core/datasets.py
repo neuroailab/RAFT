@@ -516,9 +516,13 @@ class RobonetFlowDataset(RobonetDataset):
         img1, img2 = data_dict['images'][:2].split([1,1], 0)
         return img1[0].float(), img2[0].float()
 
-    def get_video(self, f, frame, num_frames = 2):
+    def get_video(self, f, frame_start = 0, num_frames = 2):
         meta = self.meta_data_frame[self.meta_data_frame.index == Path(str(f.filename)).name]
-
+        video_length = int(meta['img_T'])
+        if (frame_start + num_frames) > video_length:
+            return None
+        video = self.get_movie(f, meta, frame=frame_start, num_frames=num_frames, transform={})
+        return list(video)
 
 def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
     """ Create the data loader for the corresponding trainign set """
