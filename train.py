@@ -8,6 +8,7 @@ import cv2
 import time
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -347,6 +348,48 @@ def get_args(cmd=None):
     else:
         args = parser.parse_args(cmd)
     return args
+
+def load_model(load_path, model_class=None, small=False, cuda=False, train=False, **kwargs):
+
+    path = Path(load_path)
+
+    def _get_model_class(name):
+        cls = None
+        if 'bootraft' in name:
+            cls = BootRaft
+        elif 'raft' in name:
+            cls = RAFT
+        elif 'thing' in name:
+            cls = ThingsClassifier
+        elif 'centroid' in name:
+            cls = CentroidRegressor
+        else:
+            raise ValueError("Couldn't identify a model class associated with %s" % name)
+        return cls
+
+    if model_class is None:
+        cls = _get_model_class(path.name)
+    else:
+        cls = _get_model_class(model_class)
+    assert cls is not None:
+
+    ## get the args
+    args = get_args("--small" if small else "")
+    for k,v in kwargs.items():
+        args.__setattr__(k,v)
+
+    # build model
+    model = nn.DataParallel(cls(args), device_ids=args.gpus)
+    if load_path is not None:
+        did_load = model.load_state_dict(torch.load(load_path), strict=False)
+        print(did_load)
+    if cuda:
+        model.cuda()
+    model.train(train)
+    if train:
+        model.module.freeze_bn()
+
+    return model
 
 if __name__ == '__main__':
     args = get_args()
