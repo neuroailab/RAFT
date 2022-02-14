@@ -103,7 +103,8 @@ class KpPrior(nn.Module):
                  resolution=8,
                  randomize_background=True,
                  to_nodes=False,
-                 normalize_coordinates=True
+                 normalize_coordinates=True,
+                 norm_p=2.0
     ):
         super().__init__()
         self.centroid_model = self._set_model(
@@ -127,6 +128,7 @@ class KpPrior(nn.Module):
         self.resolution = resolution
         self.randomize_background = randomize_background
         self.to_nodes = to_nodes
+        self.norm_p = norm_p
 
     def _set_model(self, model, config=None):
         if isinstance(model, nn.Module):
@@ -155,7 +157,7 @@ class KpPrior(nn.Module):
         return thingness_mask
 
     @staticmethod
-    def get_kp_prior(dcentroids, mask=None, resolution=6, randomize_background=True, to_nodes=False, normalize_coordinates=True):
+    def get_kp_prior(dcentroids, mask=None, resolution=6, randomize_background=True, to_nodes=False, normalize_coordinates=True, norm_p=2.0):
         B,_,H,W = dcentroids.shape
         if normalize_coordinates:
             norm = torch.tensor([(H-1.)/2., (W-1.)/2.], device=dcentroids.device)
@@ -167,7 +169,7 @@ class KpPrior(nn.Module):
         dcentroids = dcentroids * (mask if mask is not None else 1.)
         kp_prior = targets.CentroidTarget.hw_to_discrete_position(
             dcentroids.view(B, 2, H, W) + coords,
-            from_xy=False, resolution=resolution
+            from_xy=False, resolution=resolution, norm_p=norm_p
         )
 
         if randomize_background and (mask is not None):
@@ -196,7 +198,8 @@ class KpPrior(nn.Module):
             resolution=self.resolution,
             randomize_background=self.randomize_background,
             to_nodes=self.to_nodes,
-            normalize_coordinates=self.normalize_coordinates
+            normalize_coordinates=self.normalize_coordinates,
+            norm_p=self.norm_p
         )
 
         return kp_prior

@@ -349,7 +349,13 @@ def get_args(cmd=None):
         args = parser.parse_args(cmd)
     return args
 
-def load_model(load_path, model_class=None, small=False, cuda=False, train=False, **kwargs):
+def load_model(load_path,
+               model_class=None,
+               small=False,
+               cuda=False,
+               train=False,
+               freeze_bn=False,
+               **kwargs):
 
     path = Path(load_path)
 
@@ -371,10 +377,12 @@ def load_model(load_path, model_class=None, small=False, cuda=False, train=False
         cls = _get_model_class(path.name)
     else:
         cls = _get_model_class(model_class)
-    assert cls is not None:
+    assert cls is not None, "Wasn't able to infer model class"
 
     ## get the args
-    args = get_args("--small" if small else "")
+    args = get_args("")
+    if small:
+        args.small = True
     for k,v in kwargs.items():
         args.__setattr__(k,v)
 
@@ -386,7 +394,7 @@ def load_model(load_path, model_class=None, small=False, cuda=False, train=False
     if cuda:
         model.cuda()
     model.train(train)
-    if train:
+    if freeze_bn:
         model.module.freeze_bn()
 
     return model
