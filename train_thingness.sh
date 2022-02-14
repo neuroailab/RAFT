@@ -1,7 +1,8 @@
 #!/bin/bash
 mkdir -p checkpoints
+python -u train.py --name thingness-tdw-selfsup-bs4-small-20frames-fullplay --stage tdw --validation z --gpus 0 1 2 3 --num_steps 200000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model thingness --teacher_ckpt checkpoints/raft-tdw-bn-fullplay.pth --teacher_iters 18 --small --max_frame 25 --full_playroom
 # 2.11.22
-python -u train.py --name thingness-tdw-selfsup-bs2-small-pw5 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 2 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model thingness --teacher_ckpt checkpoints/raft-tdw-bn-fullplay.pth --teacher_iters 18 --small --pos_weight 5.0
+# python -u train.py --name thingness-tdw-selfsup-bs2-small-pw5 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 2 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model thingness --teacher_ckpt checkpoints/raft-tdw-bn-fullplay.pth --teacher_iters 18 --small --pos_weight 5.0
 # python -u train.py --name thingness-tdw-selfsup-bs2-small-20frames --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 2 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model thingness --teacher_ckpt checkpoints/raft-tdw-bn-fullplay.pth --teacher_iters 18 --small --max_frame 25
 # python -u train.py --name thingness-tdw-selfsup-bs2-pw10 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 2 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model thingness --teacher_ckpt checkpoints/raft-tdw-bn-fullplay.pth --teacher_iters 18 --pos_weight 10.0
 # python -u train.py --name thingness-tdw-selfsup-bs2-small --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 2 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model thingness --teacher_ckpt checkpoints/raft-tdw-bn-fullplay.pth --teacher_iters 18 --small
