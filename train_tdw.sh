@@ -1,7 +1,8 @@
 #!/bin/bash
 mkdir -p checkpoints
 # 2.9.22
-python -u train.py --name bootraft-tdw-inpnorm --stage tdw --validation chairs --gpus 0 1 --num_steps 20000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model bootraft
+python -u train.py --name raft-tdw-bs1-tr0-8 --stage tdw --validation chairs --gpus 0 --num_steps 20000 --batch_size 1 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --filepattern *[0-8] --small
+# python -u train.py --name bootraft-tdw-inpnorm --stage tdw --validation chairs --gpus 0 1 --num_steps 20000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model bootraft
 # 2.8.22
 # python -u train.py --name raft-tdw-bn-amaxtotalenergyframes --stage tdw --validation chairs --gpus 0 1 --num_steps 100000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --max_frame -1 --training_frames datasets/supervision_frames/model_split_4_totalenergyargmax.json
 # python -u train.py --name raft-tdw-bn-amaxflowframes --stage tdw --validation chairs --gpus 0 1 --num_steps 100000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --max_frame -1 --training_frames datasets/supervision_frames/model_split_4_threshargmax.json

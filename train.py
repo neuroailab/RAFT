@@ -310,6 +310,8 @@ def get_args(cmd=None):
     parser.add_argument('--name', default='raft', help="name your experiment")
     parser.add_argument('--stage', default="chairs", help="determines which dataset to use for training")
     parser.add_argument('--dataset_names', type=str, nargs='+')
+    parser.add_argument('--filepattern', type=str, default="*", help="which files to train on tdw")
+    parser.add_argument('--test_filepattern', type=str, default="*9", help="which files to val on tdw")
     parser.add_argument('--restore_ckpt', help="restore checkpoint")
     parser.add_argument('--small', action='store_true', help='use small model')
     parser.add_argument('--validation', type=str, nargs='+')
