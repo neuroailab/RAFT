@@ -17,7 +17,7 @@ import torch.nn.functional as F
 
 from torch.utils.data import DataLoader
 from raft import RAFT, ThingsClassifier, CentroidRegressor
-from bootraft import BootRaft, CentroidMaskTarget
+from bootraft import BootRaft, CentroidMaskTarget, ForegroundMaskTarget
 import evaluate
 import datasets
 
@@ -70,6 +70,9 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
     else:
         loss_fn = lambda logits, labels: (logits - labels).abs()
         assert flow_preds[-1].shape[-3] == 2, flow_preds[-1].shape
+
+    # print("num foreground px", flow_gt[0].sum())
+    # print("total pixels", np.prod(flow_gt.shape[-2:]))
 
     for i in range(n_predictions):
         i_weight = gamma**(n_predictions - i - 1)
@@ -230,6 +233,11 @@ def train(args):
         teacher.eval()
         teacher.module.freeze_bn()
 
+    ## if training on Thingness or Centroids on DAVIS, we construct a foreground mask out of the flow
+    target_net = None
+    if (args.stage.lower() == 'davis') and (args.model.lower() in ['thingness', 'centroid']):
+        target_net = nn.DataParallel(ForegroundMaskTarget(mask_input=True, get_connected_component=True), device_ids=args.gpus).cuda()
+
     train_loader = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, model)
 
@@ -260,8 +268,14 @@ def train(args):
                 image2 = (image2 + stdv * torch.randn(*image2.shape).cuda()).clamp(0.0, 255.0)
 
             flow_predictions = model(image1, image2, iters=args.iters)
+
+            ## get the self-supervision
             if selfsup:
                 _, flow = teacher(image1, image2, iters=args.teacher_iters, test_mode=True)
+
+            ## process the gt
+            if target_net is not None:
+                flow = target_net(flow)
 
             if args.model.lower() == 'centroid':
                 loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=args.scale_centroids)

@@ -4,6 +4,7 @@ import numpy as np
 import h5py, json
 import io
 import torch
+import torch.nn as nn
 import torch.utils.data as data
 import torch.nn.functional as F
 from torchvision import transforms
@@ -559,7 +560,6 @@ class DavisFlowDataset(DavisDataset):
         img1, img2 = [self.crop(im) for im in list(data_dict['images'][:2])]
         if self.get_flows:
             flow = self.crop(data_dict['flows'][0])
-            print(img1.shape, img2.shape, flow.shape)
             return img1.float(), img2.float(), flow
         else:
             return img1.float(), img2.float()
