@@ -23,6 +23,8 @@ from utils.augmentor import FlowAugmentor, SparseFlowAugmentor
 from dorsalventral.data.robonet import (RobonetDataset,
                                         ROBONET_DIR,
                                         get_robot_names)
+from dorsalventral.data.davis import (DavisDataset,
+                                      get_dataset_names)
 
 import kornia.color
 
@@ -524,6 +526,44 @@ class RobonetFlowDataset(RobonetDataset):
         video = self.get_movie(f, meta, frame=frame_start, num_frames=num_frames, transform={})
         return list(video)
 
+class DavisFlowDataset(DavisDataset):
+
+    all_dataset_names = get_dataset_names()
+    def __init__(self,
+                 root='/data5/dbear/DAVIS2016',
+                 dataset_names=all_dataset_names,
+                 sequence_length=2,
+                 get_gt_flow=False,
+                 flow_gap=1,
+                 *args, **kwargs):
+        if dataset_names is None:
+            dataset_names = self.all_dataset_names
+        super().__init__(dataset_dir=root,
+                         dataset_names=dataset_names,
+                         sequence_length=sequence_length,
+                         to_tensor=True,
+                         get_flows=get_gt_flow,
+                         flow_gap=flow_gap,
+                         *args, **kwargs)
+
+        ## center crop
+        size = self.resize_to or (1080, 1920)
+        crop_size = (8 * (size[0] // 8), 8 * (size[1] //  8))
+        if crop_size == size:
+            self.crop = nn.Identity()
+        else:
+            self.crop = transforms.CenterCrop(crop_size)
+
+    def __getitem__(self, idx):
+        data_dict = super().__getitem__(idx)
+        img1, img2 = [self.crop(im) for im in list(data_dict['images'][:2])]
+        if self.get_flows:
+            flow = self.crop(data_dict['flows'][0])
+            print(img1.shape, img2.shape, flow.shape)
+            return img1.float(), img2.float(), flow
+        else:
+            return img1.float(), img2.float()
+
 def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
     """ Create the data loader for the corresponding trainign set """
 
@@ -563,6 +603,17 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             train=True,
             filter_imsize=args.image_size
         )
+
+    if args.stage == 'davis':
+        print("dataset names", args.dataset_names)
+        train_dataset = DavisFlowDataset(
+            root='/data5/dbear/DAVIS2016',
+            dataset_names=None,
+            sequence_length=2,
+            split='all',
+            resize=args.image_size,
+            get_gt_flow=True,
+            flow_gap=1)
 
     if args.stage == 'chairs':
         if args.no_aug:

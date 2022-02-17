@@ -206,7 +206,7 @@ def train(args):
     model.cuda()
     model.train()
 
-    if args.stage not in ['chairs', 'tdw', 'robonet']:
+    if args.stage not in ['chairs', 'tdw', 'robonet', 'davis']:
         model.module.freeze_bn()
 
     ## load a teacher model
@@ -247,6 +247,9 @@ def train(args):
             optimizer.zero_grad()
             if selfsup:
                 image1, image2 = [x.cuda() for x in data_blob[:2]]
+                valid = None
+            elif len(data_blob) == 3:
+                image1, image2, flow = [x.cuda() for x in data_blob]
                 valid = None
             else:
                 image1, image2, flow, valid = [x.cuda() for x in data_blob]
@@ -290,7 +293,7 @@ def train(args):
                 logger.write_dict(results)
 
                 model.train()
-                if args.stage not in ['chairs', 'tdw', 'robonet']:
+                if args.stage not in ['chairs', 'tdw', 'robonet', 'davis']:
                     model.module.freeze_bn()
 
             total_steps += 1
