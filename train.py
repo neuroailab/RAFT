@@ -327,6 +327,8 @@ def get_args(cmd=None):
     parser.add_argument('--name', default='raft', help="name your experiment")
     parser.add_argument('--stage', default="chairs", help="determines which dataset to use for training")
     parser.add_argument('--dataset_names', type=str, nargs='+')
+    parser.add_argument('--train_split', type=str, default='all')
+    parser.add_argument('--flow_gap', type=int, default=1)
     parser.add_argument('--filepattern', type=str, default="*", help="which files to train on tdw")
     parser.add_argument('--test_filepattern', type=str, default="*9", help="which files to val on tdw")
     parser.add_argument('--restore_ckpt', help="restore checkpoint")
@@ -338,7 +340,7 @@ def get_args(cmd=None):
     parser.add_argument('--num_steps', type=int, default=100000)
     parser.add_argument('--batch_size', type=int, default=6)
     parser.add_argument('--image_size', type=int, nargs='+', default=[384, 512])
-    parser.add_argument('--gpus', type=int, nargs='+', default=[0,1])
+    parser.add_argument('--gpus', type=int, nargs='+', default=[0])
     parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
 
     parser.add_argument('--iters', type=int, default=12)

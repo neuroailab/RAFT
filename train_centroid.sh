@@ -1,7 +1,8 @@
 #!/bin/bash
 mkdir -p checkpoints
 # 2.14.22
-python -u train.py --name centroid-tdw-selfsup-bs4-scaledmse-fullplay-tr0-8 --stage tdw --validation z --gpus 0 1 2 3 --num_steps 200000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model centroid --scale_centroids --teacher_ckpt checkpoints/raft-tdw-bn-fullplay.pth --teacher_iters 18 --full_playroom --filepattern *[0-8]
+python -u train.py --name centroid-tdw-selfsupSintel-bs4-scaledmse-fullplay-tr0-8 --stage tdw --validation z --gpus 0 1 2 3 --num_steps 200000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model centroid --scale_centroids --teacher_ckpt models/raft-sintel.pth --teacher_iters 24 --full_playroom --filepattern *[0-8]
+# python -u train.py --name centroid-tdw-selfsup-bs4-scaledmse-fullplay-tr0-8 --stage tdw --validation z --gpus 0 1 2 3 --num_steps 200000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model centroid --scale_centroids --teacher_ckpt checkpoints/raft-tdw-bn-fullplay.pth --teacher_iters 18 --full_playroom --filepattern *[0-8]
 # 2.13.22
 # python -u train.py --name centroid-tdw-selfsup-bs4-scaledmse-fullplay --stage tdw --validation z --gpus 0 1 2 3 --num_steps 200000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model centroid --scale_centroids --teacher_ckpt checkpoints/raft-tdw-bn-fullplay.pth --teacher_iters 18 --full_playroom
 # 2.11.22

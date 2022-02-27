@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.utils.data as data
 import torch.nn.functional as F
 from torchvision import transforms
+from torchvision.io import read_image
 from PIL import Image
 import cv2 as cv
 
@@ -26,6 +27,7 @@ from dorsalventral.data.robonet import (RobonetDataset,
                                         get_robot_names)
 from dorsalventral.data.davis import (DavisDataset,
                                       get_dataset_names)
+from dorsalventral.data.utils import ToTensor, RgbToIntSegments
 
 import kornia.color
 
@@ -284,6 +286,7 @@ class TdwFlowDataset(FlowDataset):
                  training_frames=None,
                  testing_frames=None,
                  get_gt_flow=False,
+                 get_gt_segments=False,
                  scale_to_pixels=True,
                  aug_params=None):
         super(TdwFlowDataset, self).__init__(aug_params)
@@ -310,6 +313,11 @@ class TdwFlowDataset(FlowDataset):
             self.is_test = True
 
         self.get_gt_flow = get_gt_flow or (not self.is_test)
+        self.get_gt_segments = get_gt_segments
+        if self.get_gt_segments:
+            self.transform_segments = transforms.Compose([
+                ToTensor(), RgbToIntSegments()])
+
 
     def __len__(self):
         return len(self.train_files if not self.is_test else self.test_files)
@@ -431,6 +439,10 @@ class TdwFlowDataset(FlowDataset):
         flow = self.rgb_to_xy_flows(flow, to_xy=True, scale_to_pixels=self.scale_to_pixels)
         return flow.astype(np.float32)
 
+    def _get_objects(self, f, frame = 0):
+        objects = self._get_pass(f, "objects", frame)
+        return self.transform_segments(objects)[0]
+
     def _init_seed(self):
 
         if not self.init_seed:
@@ -478,6 +490,9 @@ class TdwFlowDataset(FlowDataset):
         ## get the flow
         flow = self._get_flow(f, i_frame) if self.get_gt_flow else {}
 
+        ## get the segments
+        segments = self._get_objects(f, i_frame) if self.get_gt_segments else {}
+
         ## close the hdf5
         f.close()
 
@@ -495,7 +510,221 @@ class TdwFlowDataset(FlowDataset):
 
         to_tensor = lambda x: torch.from_numpy(x).permute(2, 0, 1).float()
 
-        return (to_tensor(img1), to_tensor(img2), to_tensor(flow), torch.from_numpy(valid).float())
+        if not self.get_gt_segments:
+            return (to_tensor(img1), to_tensor(img2), to_tensor(flow), torch.from_numpy(valid).float())
+        else:
+            return (to_tensor(img1), to_tensor(img2), to_tensor(flow), segments)
+
+class TdwAffinityDataset(torch.utils.data.Dataset):
+    def __init__(self,
+                 dataset_dir='/mnt/fs6/honglinc/dataset/tdw_playroom_small/',
+                 aff_r=5,
+                 training=False,
+                 size=None,
+                 splits='[0-9]*',
+                 test_splits='[0-3]', # trainval: 4
+                 filepattern='*[0-8]',
+                 test_filepattern='*9', # trainval: "0*[0-4]"
+                 delta_time=1,
+                 frame_idx=5,
+                 raft_ckpt=None,
+                 raft_args={'test_mode': True, 'iters': 24},
+                 flow_thresh=0.5,
+                 full_supervision=False,
+                 single_supervision=False,
+                 mean=None,
+                 std=None,
+                 is_test=True
+    ):
+        self.training = training
+        self.frame_idx = frame_idx
+        self.delta_time = delta_time
+
+        self.aff_r = aff_r
+        self.num_levels = aff_r
+
+        meta_path = os.path.join(dataset_dir, 'meta.json')
+        self.meta = json.loads(Path(meta_path).open().read())
+
+        if self.training:
+            self.file_list = sorted(glob(os.path.join(dataset_dir, 'images',
+                                                    'model_split_'+splits,
+                                                    filepattern)))
+        else:
+            self.file_list = sorted(glob(os.path.join(dataset_dir, 'images',
+                                                    'model_split_'+test_splits,
+                                                    test_filepattern)))
+
+        self.precomputed_raft = False
+        if not (single_supervision or full_supervision):
+            self.raft = self._load_raft(raft_ckpt)
+            self.raft_args = copy.deepcopy(raft_args)
+        self.flow_thresh = flow_thresh
+
+        ## normalizing
+        if (mean is not None) and (std is not None):
+            norm = transforms.Normalize(mean=mean, std=std)
+            self.normalize = lambda x: (norm(x.float() / 255.))
+        else:
+            self.normalize = lambda x: x.float()
+
+        ## resizing
+        self.size = size
+        if self.size is None:
+            self.resize = self.resize_labels = nn.Identity()
+        else:
+            self.resize = transforms.Resize(self.size)
+            self.resize_labels = transforms.Resize(self.size,
+                                                   interpolation=transforms.InterpolationMode.NEAREST)
+
+
+        ## how to get supervision inputs
+        self.full_supervision = full_supervision
+        self.single_supervision = single_supervision
+
+        self.is_test = is_test
+
+    def _load_raft(self, ckpt):
+        if ckpt is None:
+            self.precomputed_raft = True
+            return None
+        self.precomputed_raft = False
+        raft = train.load_model(
+            load_path=ckpt,
+            small=False,
+            cuda=True,
+            train=False)
+        return raft
+
+    def get_raft_flow(self, img1, img2):
+        assert self.raft is not None
+        _, pred_flow = self.raft(img1[None].cuda().float(), img2[None].cuda().float(),
+                                 **self.raft_args)
+        return pred_flow
+
+    def get_raft_mask(self, img1, img2):
+        pred_flow = self.get_raft_flow(img1, img2)
+        pred_mask = (pred_flow.square().sum(-3).sqrt() > self.flow_thresh)
+        if len(pred_mask.shape) == 3:
+            pred_mask = pred_mask[0]
+        return pred_mask.cpu()
+
+    def get_semantic_map(self, motion_mask, background_class=80):
+        """Only two categories: foreground (i.e. moving or moveable) and background"""
+        size = motion_mask.shape[-2:]
+        fg = (motion_mask.long() == 1).view(1, *size)
+        return torch.cat([fg, torch.logical_not(fg)], 0).float()
+
+
+    def __len__(self):
+        return len(self.file_list)
+
+    def __getitem__(self, idx):
+        file_name = self.file_list[idx]
+        image_1 = self.read_frame(file_name, frame_idx=self.frame_idx)
+        try:
+            image_2 = self.read_frame(file_name, frame_idx=self.frame_idx+self.delta_time)
+        except Exception as e:
+            image_2 = image_1.clone()  #  This will always give empty motion segments, so the loss will be zero
+            print('Encounter error:', e)
+        segment_colors = self.read_frame(file_name.replace('/images/', '/objects/'), frame_idx=self.frame_idx)
+        _, segment_map, gt_moving = self.process_segmentation_color(segment_colors, file_name)
+
+        if self.full_supervision:
+            moving = (segment_map > 0)
+        elif self.precomputed_raft:
+            pred_flow = self.read_flow(file_name, size=self.size)
+            moving = (pred_flow.square().sum(-3).sqrt() > self.flow_thresh)
+        elif self.raft is not None:
+            moving = self.get_raft_mask(image_1, image_2)
+        else:
+            assert self.single_supervision
+            # raise NotImplementedError("Don't use the GT moving object!")
+            moving = gt_moving
+
+        if self.is_test:
+            return (self.normalize(self.resize(image_1).float()), segment_map, gt_moving)
+
+        semantic = self.get_semantic_map(moving)
+        aff_target = self.get_affinity_target(segment_map if self.full_supervision else moving)
+
+        return (self.normalize(self.resize(image_1).float()), self.resize_labels(semantic), aff_target)
+
+    def get_affinity_target(self, segments):
+        assert len(segments.shape) == 2, segments.shape
+        segments = segments.long()
+        segments = self.resize_labels(segments[None])[0] # [H,W] <long>
+
+        aff_targets = torch.zeros((self.num_levels, self.aff_r**2, self.size[0], self.size[1])).float()
+        for lev in range(self.num_levels):
+            segs_lev = segments[0:self.size[0]:2**lev,
+                                0:self.size[1]:2**lev]
+            size = [self.size[0] // (2**lev), self.size[1] // (2**lev)]
+
+            segs_aff_lev_2_pix = torch.zeros((size[0] + (self.aff_r//2)*2,
+                                              size[1] + (self.aff_r//2)*2)).long()
+            segs_aff_lev_2_pix[self.aff_r//2:
+                               size[0]+self.aff_r//2,
+                               self.aff_r//2:
+                               size[1]+self.aff_r//2] = segs_lev
+
+            segs_aff_compare = torch.zeros((self.aff_r**2, size[0], size[1])).long()
+
+            ## set affinity values
+            for i in range(self.aff_r):
+                for j in range(self.aff_r):
+                    segs_aff_compare[i*self.aff_r + j] = segs_aff_lev_2_pix[i:i+size[0],
+                                                                            j:j+size[1]]
+
+            ## compare
+            aff_t = (segs_lev[None] == segs_aff_compare).float()
+            aff_targets[lev, :, 0:size[0], 0:size[1]] = aff_t
+
+        return aff_targets.to(segments.device)
+
+    @staticmethod
+    def read_frame(path, frame_idx):
+        image_path = os.path.join(path, format(frame_idx, '05d') + '.png')
+        return read_image(image_path)
+
+    @staticmethod
+    def read_flow(path, size=[256,256]):
+        flow_path = path.replace('/images/', '/flows/') + '.pt'
+        try:
+            raft_flow = torch.load(flow_path)
+        except:
+            raft_flow = torch.zeros((2, *size))
+        return raft_flow.float()
+
+    @staticmethod
+    def _object_id_hash(objects, val=256, dtype=torch.long):
+        C = objects.shape[0]
+        objects = objects.to(dtype)
+        out = torch.zeros_like(objects[0:1, ...])
+        for c in range(C):
+            scale = val ** (C - 1 - c)
+            out += scale * objects[c:c + 1, ...]
+        return out
+
+    def process_segmentation_color(self, seg_color, file_name):
+        # convert segmentation color to integer segment id
+        raw_segment_map = self._object_id_hash(seg_color, val=256, dtype=torch.long)
+        raw_segment_map = raw_segment_map.squeeze(0)
+
+        # remove zone id from the raw_segment_map
+        meta_key = 'playroom_large_v3_images/' + file_name.split('/images/')[-1] + '.hdf5'
+        zone_id = int(self.meta[meta_key]['zone'])
+        raw_segment_map[raw_segment_map == zone_id] = 0
+
+        # convert raw segment ids to a range in [0, n]
+        _, segment_map = torch.unique(raw_segment_map, return_inverse=True)
+        segment_map -= segment_map.min()
+
+        # gt_moving_mask
+        gt_moving = raw_segment_map == int(self.meta[meta_key]['moving'])
+
+        return raw_segment_map, segment_map, gt_moving
+
 
 class RobonetFlowDataset(RobonetDataset):
 
@@ -557,6 +786,11 @@ class DavisFlowDataset(DavisDataset):
 
     def __getitem__(self, idx):
         data_dict = super().__getitem__(idx)
+        if 'segments' in data_dict.keys():
+            self.gt = self.crop(data_dict['segments'])
+        if 'flow_images' in data_dict.keys():
+            self.flow_images = self.crop(data_dict['flow_images'])
+
         img1, img2 = [self.crop(im) for im in list(data_dict['images'][:2])]
         if self.get_flows:
             flow = self.crop(data_dict['flows'][0])
@@ -610,10 +844,10 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             root='/data5/dbear/DAVIS2016',
             dataset_names=None,
             sequence_length=2,
-            split='all',
+            split=args.train_split,
             resize=args.image_size,
             get_gt_flow=True,
-            flow_gap=1)
+            flow_gap=args.flow_gap)
 
     if args.stage == 'chairs':
         if args.no_aug:
