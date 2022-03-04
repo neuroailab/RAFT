@@ -44,7 +44,7 @@ MODEL:
     TEACHER_TYPE: 'cc_labels'
     EVAL_FULL_AFFINITY: False
     EVAL_FULL_RESOLUTION: True
-    OBJ_SUP: [ ]
+    OBJ_SUP: [ 'raft_flow' ]
     SAMPLE_INDS_PADDING: 'constant'
     KERNEL_SIZE: 1
     COMBINE_ATTENTION: False

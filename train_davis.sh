@@ -1,7 +1,7 @@
 #!/bin/bash
 mkdir -p checkpoints
 # 2.17.22
-CUDA_VISIBLE_DEVICES=2,3 python -u train.py --name eisen-davisTr-selfsup-ccs-bs4 --stage davis --validation z --gpus 0 1 --num_steps 100000 --batch_size 4 --lr 0.005 --image_size 256 480 --wdecay 0.0001 --model eisen --train_split train --flow_gap 1
+CUDA_VISIBLE_DEVICES=1,2,3 python -u train.py --name eisen-davisTr-selfsup-ccs-bs4 --stage davis --validation z --gpus 0 1 2 --num_steps 100000 --batch_size 3 --lr 0.005 --image_size 256 480 --wdecay 0.0001 --model eisen --train_split train --flow_gap 1
 
 # python -u train.py --name centroid-davisTr-selfsup-ccs-bs4 --stage davis --validation z --gpus 0 1 2 3 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 270 480 --wdecay 0.0001 --model thingness --train_split train --flow_gap 1
 # python -u train.py --name thingness-davisTr-selfsup-ccs-bs4 --stage davis --validation z --gpus 0 1 2 3 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 270 480 --wdecay 0.0001 --model thingness --train_split train --flow_gap 1

@@ -592,9 +592,10 @@ class Encoder(DeepLabV3PlusHead):
         self.levels = list(range(self.min_level, self.max_level+1))
 
         channels = {2: 256, 3: 512, 4: 1024}
-        # lateral conv for multi-level features concatenation
-        for level in self.levels:
-            setattr(self, 'lateral_conv_%d' % level, Conv2d(channels[level], 512, kernel_size=1, bias=True))
+        if not self.apply_aspp:
+            # lateral conv for multi-level features concatenation
+            for level in self.levels:
+                setattr(self, 'lateral_conv_%d' % level, Conv2d(channels[level], 512, kernel_size=1, bias=True))
 
 
     @classmethod
@@ -672,7 +673,7 @@ class EISEN(nn.Module):
 
     def forward(self, image, motion_segments):
         features = self.encoder(image)
-        inputs = {'objects': motion_segments}
+        inputs = {'raft_flow': motion_segments}
         output = self.affinity_decoder(features, inputs)
 
         return output

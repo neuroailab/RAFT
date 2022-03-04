@@ -1,4 +1,5 @@
 # Data loading based on https://github.com/NVIDIA/flownet2-pytorch
+import pdb
 from pathlib import Path
 import numpy as np
 import h5py, json
@@ -28,6 +29,7 @@ from utils.augmentor import FlowAugmentor, SparseFlowAugmentor
 from dorsalventral.data.davis import (DavisDataset,
                                       get_dataset_names)
 from dorsalventral.data.utils import ToTensor, RgbToIntSegments
+import matplotlib.pyplot as plt
 
 import kornia.color
 
@@ -798,7 +800,7 @@ class DavisFlowDataset(DavisDataset):
         else:
             return img1.float(), img2.float()
 
-def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
+def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H', sampler=False):
     """ Create the data loader for the corresponding trainign set """
 
     if args.stage == 'tdw':
@@ -882,8 +884,22 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
 
     print(train_dataset)
     print(len(train_dataset))
-    train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size,
-        pin_memory=False, shuffle=True, num_workers=4, drop_last=True)
+    if sampler is not None:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            train_dataset,
+            num_replicas=sampler['world_size'],
+            rank=sampler['rank']
+        )
+        train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
+                                                   batch_size=args.batch_size,
+                                                   shuffle=False,
+                                                   num_workers=0,
+                                                   pin_memory=True,
+                                                   sampler=train_sampler)
+
+    else:
+        train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size,
+            pin_memory=False, shuffle=True, num_workers=4, drop_last=True)
 
     print('Training with %d image pairs' % len(train_dataset))
     return train_loader

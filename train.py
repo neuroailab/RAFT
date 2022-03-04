@@ -23,8 +23,9 @@ from bootraft import BootRaft, CentroidMaskTarget, ForegroundMaskTarget
 from eisen import EISEN
 import evaluate
 import datasets
-
+import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
+import torch.multiprocessing as mp
 
 try:
     from torch.cuda.amp import GradScaler
@@ -188,7 +189,7 @@ class Logger:
         self.writer.close()
 
 
-def train(args):
+def train(gpu, args):
 
     if args.model.lower() == 'bootraft':
         model_cls = BootRaft
@@ -200,16 +201,25 @@ def train(args):
         model_cls = CentroidRegressor
         print("used CentroidRegressor")
     elif args.model.lower() == 'eisen':
-        import torch.distributed as dist
-        dist_url = "tcp://127.0.0.1:20530"
-        dist.init_process_group(backend="NCCL", init_method=dist_url, world_size=1, rank=0)
+
+        dist_url = "tcp://127.0.0.1:20454"
+
+        dist.init_process_group(
+            backend='nccl',
+            init_method=dist_url,
+            world_size=len(args.gpus),
+            rank=gpu
+        )
+        torch.cuda.set_device(gpu)
 
         model_cls = EISEN
-        print("used CentroidRegressor")
+        print("used EISEN")
     else:
         model_cls = RAFT
         print("used RAFT")
-    model = nn.DataParallel(model_cls(args), device_ids=args.gpus)
+
+    model = nn.parallel.DistributedDataParallel(model_cls(args).cuda(), device_ids=[gpu], find_unused_parameters=True)
+
     print("Parameter Count: %d" % count_parameters(model))
 
     if args.restore_ckpt is not None:
@@ -246,9 +256,12 @@ def train(args):
     ## if training on Thingness or Centroids on DAVIS, we construct a foreground mask out of the flow
     target_net = None
     if (args.stage.lower() == 'davis') and (args.model.lower() in ['thingness', 'centroid', 'eisen']):
-        target_net = nn.DataParallel(ForegroundMaskTarget(mask_input=False, get_connected_component=True), device_ids=args.gpus).cuda()
+        assert (args.stage.lower() == 'davis') and (args.model.lower() == 'eisen')
+        target_net = nn.DataParallel(ForegroundMaskTarget(mask_input=False if (args.stage.lower() == 'davis') and (args.model.lower() == 'eisen') else True,
+                                                          get_connected_component=True), device_ids=args.gpus).cuda()
 
-    train_loader = datasets.fetch_dataloader(args)
+
+    train_loader = datasets.fetch_dataloader(args, sampler={'world_size': len(args.gpus), 'rank': gpu})
     optimizer, scheduler = fetch_optimizer(args, model)
 
     total_steps = 0
@@ -267,7 +280,7 @@ def train(args):
                 image1, image2 = [x.cuda() for x in data_blob[:2]]
                 valid = None
             elif len(data_blob) == 3:
-                image1, image2, flow = [x.cuda() for x in data_blob]
+                image1, image2, flow = [x.cuda(non_blocking=True) for x in data_blob]
                 valid = None
             else:
                 image1, image2, flow, valid = [x.cuda() for x in data_blob]
@@ -288,13 +301,20 @@ def train(args):
             if target_net is not None:
                 flow = target_net(flow)
 
-
             if args.model.lower() == 'centroid':
                 loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=ƒargs.scale_centroids)
             elif args.model.lower() == 'eisen':
-                pdb.set_trace()
-                output = model(image1, flow[:, 0])
-                loss = output['loss']
+                # print(image1.shape, image1.sum(), gpu)
+                # plt.subplot(1, 2, 1)
+                # plt.imshow(image1[0].permute(1, 2, 0).cpu() / 255.)
+                # plt.title('%d' % gpu)
+                # plt.subplot(1, 2, 2)
+                # plt.imshow(flow[0, 0].cpu())
+                # plt.show()
+                # plt.close()
+
+                output = model(image1 / 255., flow[:, 0:1])
+                loss = output['sup_loss']
                 metrics = {}
             else:
                 loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma, pos_weight=args.pos_weight)
@@ -446,4 +466,4 @@ if __name__ == '__main__':
     if not os.path.isdir('checkpoints'):
         os.mkdir('checkpoints')
 
-    train(args)
+    mp.spawn(train, nprocs=len(args.gpus), args=(args,))
