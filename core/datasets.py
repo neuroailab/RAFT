@@ -22,9 +22,9 @@ from utils import frame_utils
 from utils.augmentor import FlowAugmentor, SparseFlowAugmentor
 
 ## to wrap
-from dorsalventral.data.robonet import (RobonetDataset,
-                                        ROBONET_DIR,
-                                        get_robot_names)
+# from dorsalventral.data.robonet import (RobonetDataset,
+#                                         ROBONET_DIR,
+#                                         get_robot_names)
 from dorsalventral.data.davis import (DavisDataset,
                                       get_dataset_names)
 from dorsalventral.data.utils import ToTensor, RgbToIntSegments
@@ -726,41 +726,41 @@ class TdwAffinityDataset(torch.utils.data.Dataset):
         return raw_segment_map, segment_map, gt_moving
 
 
-class RobonetFlowDataset(RobonetDataset):
-
-    all_robots = get_robot_names()
-    def __init__(self,
-                 root=ROBONET_DIR,
-                 dataset_names=all_robots,
-                 sequence_length=2,
-                 *args, **kwargs):
-        if dataset_names is None:
-            dataset_names = self.all_robots
-        super().__init__(dataset_dir=root,
-                         dataset_names=dataset_names,
-                         sequence_length=sequence_length,
-                         *args, **kwargs)
-
-
-    def __getitem__(self, idx):
-
-        data_dict = super().__getitem__(idx)
-        img1, img2 = data_dict['images'][:2].split([1,1], 0)
-        return img1[0].float(), img2[0].float()
-
-    def get_video(self, f, frame_start = 0, num_frames = 2):
-        meta = self.meta_data_frame[self.meta_data_frame.index == Path(str(f.filename)).name]
-        video_length = int(meta['img_T'])
-        if (frame_start + num_frames) > video_length:
-            return None
-        video = self.get_movie(f, meta, frame=frame_start, num_frames=num_frames, transform={})
-        return list(video)
+# class RobonetFlowDataset(RobonetDataset):
+#
+#     all_robots = get_robot_names()
+#     def __init__(self,
+#                  root=ROBONET_DIR,
+#                  dataset_names=all_robots,
+#                  sequence_length=2,
+#                  *args, **kwargs):
+#         if dataset_names is None:
+#             dataset_names = self.all_robots
+#         super().__init__(dataset_dir=root,
+#                          dataset_names=dataset_names,
+#                          sequence_length=sequence_length,
+#                          *args, **kwargs)
+#
+#
+#     def __getitem__(self, idx):
+#
+#         data_dict = super().__getitem__(idx)
+#         img1, img2 = data_dict['images'][:2].split([1,1], 0)
+#         return img1[0].float(), img2[0].float()
+#
+#     def get_video(self, f, frame_start = 0, num_frames = 2):
+#         meta = self.meta_data_frame[self.meta_data_frame.index == Path(str(f.filename)).name]
+#         video_length = int(meta['img_T'])
+#         if (frame_start + num_frames) > video_length:
+#             return None
+#         video = self.get_movie(f, meta, frame=frame_start, num_frames=num_frames, transform={})
+#         return list(video)
 
 class DavisFlowDataset(DavisDataset):
 
     all_dataset_names = get_dataset_names()
     def __init__(self,
-                 root='/data5/dbear/DAVIS2016',
+                 root='/data2/honglinc/DAVIS2016',
                  dataset_names=all_dataset_names,
                  sequence_length=2,
                  get_gt_flow=False,
@@ -841,7 +841,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
     if args.stage == 'davis':
         print("dataset names", args.dataset_names)
         train_dataset = DavisFlowDataset(
-            root='/data5/dbear/DAVIS2016',
+            root='/data2/honglinc/DAVIS2016',
             dataset_names=None,
             sequence_length=2,
             split=args.train_split,

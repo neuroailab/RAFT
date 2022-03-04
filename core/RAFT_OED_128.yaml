@@ -1,0 +1,158 @@
+_BASE_: /data3/honglinc/detectron2_psg_gpu/projects/Panoptic-DeepLab/configs/COCO-PanopticSegmentation/panoptic_deeplab_R_52_os16_mg124_poly_200k_bs64_crop_640_640_coco_dsconv.yaml
+MODEL:
+  WEIGHTS: ""
+  META_ARCHITECTURE: "SpatialTemporal"
+  BACKBONE:
+    NAME: "build_resnet_deeplab_backbone"
+  RESNETS:
+    OUT_FEATURES: [ "res2", "res3", "res4", "res5" ]
+    STEM_MAX_POOL: True
+  GRAPH_INFERENCE_HEAD:
+    NAME: "GraphStructureInference"
+    IN_FEATURES: [ "res2", "res3", "res5" ]
+    PROJECT_FEATURES: [ "res2", "res3" ]
+    PROJECT_CHANNELS: [ 32, 64 ]
+    ASPP_CHANNELS: 256
+    ASPP_DILATIONS: [ 6, 12, 18 ]
+    ASPP_DROPOUT: 0.1
+    HEAD_CHANNELS: 32
+    CONVS_DIM: 128
+    COMMON_STRIDE: 4
+    NORM: None
+    MIN_LEVEL: 2
+    MAX_LEVEL: 4
+    KQ_DIM: 32
+    FULL_AFFINITY: [ ]
+    SUBSAMPLE_AFFINITY: True
+    INFERENCE_SUBSAMPLE_METHOD: 'local_global_mem_efficient'
+    PROPAGATION_SUBSAMPLE_METHOD: ''
+    SUBSAMPLE_NUM_SAMPLES: 1024
+    SUBSAMPLE_LOCAL_KSIZE: 25
+    INPUT_RES: [ 64, 120]
+    APPLY_ASPP: True
+    IGNORE_LABEL: 255
+    POS_ENCODING_METHOD: 'relative_sine'
+    BALANCE_STRATEGY: None
+    MAX_NODE_NUM: 25000
+    ADD_POS_ENCODING: True
+    SYMMETRIC_AFFINITY: True
+    KP_COMP_CC: True
+    CONFIDENCE_THRESHOLD: 1.0
+    NUM_PARALLEL_RUNS: 4
+    KP_ITERS: 15
+    MIN_CONNECTED_COMPONENT: 0
+    TEACHER_TYPE: 'cc_labels'
+    EVAL_FULL_AFFINITY: False
+    EVAL_FULL_RESOLUTION: True
+    OBJ_SUP: [ ]
+    SAMPLE_INDS_PADDING: 'constant'
+    KERNEL_SIZE: 1
+    COMBINE_ATTENTION: False
+    CC_MIN_AREA: 10.
+    LINEAR_KQ_PROJ: True
+  ARGS:
+    output_size: 128
+    load_encoders: 0
+    train_encoders: 1
+    train_temporal: 1
+    train_spatial: 1
+    sample_random_nodes: 1
+    compute_motion_energy: 1
+    binarize_flow: 0
+    motion_mask_loss: 0
+    discrete_flow: 1
+    mask_disocclusions: 0
+    local_radius: 12
+    full_render: 1
+    supervised: 0
+    direction_augment: 0
+    color_augment: 0
+    loss_scale: 1.0
+    reg_loss_scale: 0.0
+    print_every: 25
+    seed: 0
+    new_model: 1
+    spatial_affinities_mode: 'static'
+    stop_features_gradient: 0
+    loss_start: 0
+    loss_end: None
+    normalize_target: 0
+    sample_from_flows: 0
+    num_samples: 1
+    cuda: True
+    multi_step_kp: 1
+    mask_edges: 1
+    spatial_affinities_mask_value: -2
+    symmetric_energy: 0
+    num_levels: 3
+    output_level: 0
+    compute_levels: '"0,1,2"'
+    pretrained_target: 1
+    edges_target: 0
+    motion_energy_thresh: 0.25
+    crbp: 0
+    num_rbp_iters: 20
+    lcp_loss_scale: 1.0
+    target_features: 'head'
+    head_encoder_path: './spatial_temporal/models/weights/faststream_resnetC64ds2_Lsp1eq1sl1_ep50.pth'
+    centroid_encoder_path: './spatial_temporal/models/weights/centroidnet_C64ds2_ep10.pth'
+    stop_h0_gradient: 0
+    use_raft: 0
+    flow_radius: 3
+    inductive_bias: 'diff'
+    norm_fn: 'batch'
+    update_activated: 0
+    motion_thresh: 0.1
+    selfsup_loss_scale: 1.0
+    stop_static_gradient: 0
+    binarize_energy: 0
+    static_gt_sup: None
+    propagate_activation: True
+    kp_norm_type: 'activated_local'
+    concat_motion_static: True
+    spatial_affinities_nonlinearity: 'softmax_max_norm'
+    training_mode: 'student_teacher_v2'
+    selfsup_loss_type: 'kl'
+    new_fp_loss: True
+    kp_iters_train: 5
+    num_sample_points_train: 4
+    kp_inhibit_train: 0
+    kp_project_train: False
+    kp_adj_thresh_train: None
+    kp_iters_test: 10
+    num_sample_points_test: None
+    kp_inhibit_test: 1
+    kp_project_test: False
+    kp_adj_thresh_test: 0.75
+    use_old_encoder: True
+    use_old_decoder: True
+    use_raft_flow: True
+    raft_model: 'raft-sintel'
+    flow_threshold: 0.5
+SOLVER:
+  BASE_LR: 5e-4
+  LR_SCHEDULER_NAME: "WarmupPolyLR"
+  MAX_ITER: 200000
+  STEPS: (10000001,)
+  WARMUP_ITERS: 1000
+  LOG_PERIOD: 100
+  CHECKPOINT_PERIOD: 10000
+  IMS_PER_BATCH: 64
+  CLIP_GRAD: 1.0
+TEST:
+  EVAL_PERIOD: 5000
+DATASETS:
+  TRAIN: ("playroom_large_v3_images/train",)
+  TEST: ("playroom_large_v3_images/val", "playroom_large_v3_images/eval",)
+INPUT:
+  MOTION_CROP_TRAIN: False
+  MOTION_CROP_TEST: False
+  MOTION_CROP_SIZE: 256
+  FRAME_IDX: [5]
+  FORMAT: "RGB"
+  CROP:
+    SIZE: [256, 480]
+DATALOADER:
+  NUM_WORKERS: 1
+VERSION: 2
+

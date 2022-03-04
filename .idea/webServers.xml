@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="db39a46c-7e1f-4dd8-b3ee-128830caea41" name="node03">
+        <fileTransfer accessType="SFTP" host="node03-ccncluster.stanford.edu" port="22" sshConfigId="3559611a-3145-45e9-9d15-abdb83cc7db7" sshConfig="honglinc@node03">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="8c0a76a0-0f15-4a9a-82ed-b03763b0a454" name="node1-ccn2">
+        <fileTransfer accessType="SFTP" host="node1-ccn2cluster.stanford.edu" port="22" sshConfigId="c4d92e30-db32-460a-a37c-e75affbdc970" sshConfig="node1-ccn2">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

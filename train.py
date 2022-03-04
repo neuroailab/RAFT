@@ -1,4 +1,6 @@
 from __future__ import print_function, division
+
+import pdb
 import sys
 sys.path.append('core')
 
@@ -18,6 +20,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from raft import RAFT, ThingsClassifier, CentroidRegressor
 from bootraft import BootRaft, CentroidMaskTarget, ForegroundMaskTarget
+from eisen import EISEN
 import evaluate
 import datasets
 
@@ -196,6 +199,13 @@ def train(args):
     elif args.model.lower() == 'centroid':
         model_cls = CentroidRegressor
         print("used CentroidRegressor")
+    elif args.model.lower() == 'eisen':
+        import torch.distributed as dist
+        dist_url = "tcp://127.0.0.1:20530"
+        dist.init_process_group(backend="NCCL", init_method=dist_url, world_size=1, rank=0)
+
+        model_cls = EISEN
+        print("used CentroidRegressor")
     else:
         model_cls = RAFT
         print("used RAFT")
@@ -235,8 +245,8 @@ def train(args):
 
     ## if training on Thingness or Centroids on DAVIS, we construct a foreground mask out of the flow
     target_net = None
-    if (args.stage.lower() == 'davis') and (args.model.lower() in ['thingness', 'centroid']):
-        target_net = nn.DataParallel(ForegroundMaskTarget(mask_input=True, get_connected_component=True), device_ids=args.gpus).cuda()
+    if (args.stage.lower() == 'davis') and (args.model.lower() in ['thingness', 'centroid', 'eisen']):
+        target_net = nn.DataParallel(ForegroundMaskTarget(mask_input=False, get_connected_component=True), device_ids=args.gpus).cuda()
 
     train_loader = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, model)
@@ -267,7 +277,8 @@ def train(args):
                 image1 = (image1 + stdv * torch.randn(*image1.shape).cuda()).clamp(0.0, 255.0)
                 image2 = (image2 + stdv * torch.randn(*image2.shape).cuda()).clamp(0.0, 255.0)
 
-            flow_predictions = model(image1, image2, iters=args.iters)
+            if not args.model.lower() == 'eisen':
+                flow_predictions = model(image1, image2, iters=args.iters)
 
             ## get the self-supervision
             if selfsup:
@@ -277,8 +288,14 @@ def train(args):
             if target_net is not None:
                 flow = target_net(flow)
 
+
             if args.model.lower() == 'centroid':
-                loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=args.scale_centroids)
+                loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=ƒargs.scale_centroids)
+            elif args.model.lower() == 'eisen':
+                pdb.set_trace()
+                output = model(image1, flow[:, 0])
+                loss = output['loss']
+                metrics = {}
             else:
                 loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma, pos_weight=args.pos_weight)
             scaler.scale(loss).backward()
