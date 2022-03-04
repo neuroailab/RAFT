@@ -218,7 +218,7 @@ def train(gpu, args):
         model_cls = RAFT
         print("used RAFT")
 
-    model = nn.parallel.DistributedDataParallel(model_cls(args).cuda(), device_ids=[gpu], find_unused_parameters=True)
+    model = nn.parallel.DistributedDataParallel(model_cls(args).cuda(), device_ids=[gpu], find_unused_parameters=False)
 
     print("Parameter Count: %d" % count_parameters(model))
 
@@ -315,7 +315,7 @@ def train(gpu, args):
 
                 output = model(image1 / 255., flow[:, 0:1])
                 loss = output['sup_loss']
-                metrics = {}
+                metrics = {'eisen_loss': loss.detach().item()}
             else:
                 loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma, pos_weight=args.pos_weight)
             scaler.scale(loss).backward()

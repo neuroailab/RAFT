@@ -75,12 +75,14 @@ class GraphStructureInference(nn.Module):
             self.key = _build_level(self.kq_dim)
             self.query = _build_level(self.kq_dim)
 
-        if 'playroom' in cfg.DATASETS.TRAIN[0] or 'robonet' in cfg.DATASETS.TRAIN[0]:
-            self.size_dict = {2: [128, 128], 3: [64, 64], 4: [32, 32]}
-        elif 'bcz' in cfg.DATASETS.TRAIN[0]:
-            self.size_dict = {2: [128, 160], 3: [64, 80], 4: [32, 40]}
-        elif 'dsr' in cfg.DATASETS.TRAIN[0]:
-            self.size_dict = {2: [120, 120], 3: [60, 60], 4: [30, 30]}
+        # if 'playroom' in cfg.DATASETS.TRAIN[0] or 'robonet' in cfg.DATASETS.TRAIN[0]:
+        #     self.size_dict = {2: [128, 128], 3: [64, 64], 4: [32, 32]}
+        # elif 'bcz' in cfg.DATASETS.TRAIN[0]:
+        #     self.size_dict = {2: [128, 160], 3: [64, 80], 4: [32, 40]}
+        # elif 'dsr' in cfg.DATASETS.TRAIN[0]:
+        #     self.size_dict = {2: [120, 120], 3: [60, 60], 4: [30, 30]}
+
+        self.size_dict = {2: [64, 120], 3: [32, 60], 4: [16, 30]}
 
         print('Size dict: ', self.size_dict)
         # --- arguments for reproducing the new decoder
