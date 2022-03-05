@@ -3,7 +3,7 @@ import torch
 import matplotlib.pyplot as plt
 import cmocean.cm as cmo
 from tqdm import tqdm
-from PIL import ImageColor
+from PIL import Image, ImageColor
 import json, os, sys
 from pathlib import Path
 
@@ -54,6 +54,7 @@ def plot_image_pred_gt_segments(data,
                                 cmap='twilight',
                                 bg_color=(0,0,0),
                                 bg_thresh=0.5,
+                                resize=None,
                                 figsize=(12,4),
                                 show_titles=False,
                                 save_path=None,
@@ -73,10 +74,20 @@ def plot_image_pred_gt_segments(data,
     N, _N = len(data['pred_segments']), len(data['gt_segments'])
     assert N == _N
 
+    ## may need to resample
+    if resize is None:
+        R = lambda x: x
+    else:
+        def R(img):
+            dtype = img.dtype
+            img = Image.fromarray(img.astype(float))
+            img = img.resize(resize, resample=Image.BILINEAR).resize(size, resample=Image.NEAREST)
+            return np.array(img).astype(dtype)
+
     for n in range(N):
         bg = sum(data['gt_segments']) < 1
         gt += data['gt_segments'][n].astype(gt.dtype) * (n+1)
-        pred += filter_by_iou(data['pred_segments'][n], bg, bg_thresh).astype(pred.dtype) * (n+1)
+        pred += filter_by_iou(R(data['pred_segments'][n]), bg, bg_thresh).astype(pred.dtype) * (n+1)
 
     if isinstance(cmap, int):
         colors = get_palette(i=cmap)
@@ -110,7 +121,9 @@ def plot_image_pred_gt_segments(data,
     out['cmap'] = cmap
     return out
 
-def compare_models(results_dir, models, ex=0, cmap='twilight', bg_color=(255,255,255), bg_thresh=0.5,
+def compare_models(results_dir, models, ex=0,
+                   cmap='twilight', bg_color=(255,255,255), bg_thresh=0.5,
+                   resize=None,
                    show_titles=True,
                    save_path=None):
     """Plot the matched segmentation results for each of the models in models List[Path]"""
@@ -131,8 +144,9 @@ def compare_models(results_dir, models, ex=0, cmap='twilight', bg_color=(255,255
 
 
     model_plots = {
-        m: plot_image_pred_gt_segments(data={'image': img, 'gt_segments': gts, 'pred_segments': preds[m]},
-                                       cmap=cmap, bg_color=bg_color, bg_thresh=bg_thresh, do_plot=False)
+        m: plot_image_pred_gt_segments(
+            data={'image': img, 'gt_segments': gts, 'pred_segments': preds[m]},
+            cmap=cmap, bg_color=bg_color, bg_thresh=bg_thresh, resize=resize, do_plot=False)
         for m in models}
 
     ## plot results
