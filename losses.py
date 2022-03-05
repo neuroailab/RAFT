@@ -21,7 +21,7 @@ from bootraft import BootRaft, CentroidMaskTarget, ForegroundMaskTarget
 import evaluate
 import datasets
 
-def thingness_sequence_loss(thingness_preds, confident_segments, gamma=0.8):
+def thingness_loss(thingness_preds, confident_segments, gamma=0.8):
     """
     Train a pixelwise classifier for thingness.
 
@@ -60,7 +60,7 @@ def _segments_to_masks(segs, max_labels=128, background_id=0):
         out.append(masks.float())
     return out
 
-def centroid_offset_loss(offset_preds, confident_segments, gamma=0.8):
+def multicentroid_offset_loss(offset_preds, confident_segments, gamma=0.8):
     """
     Train a pixelwise centroid offset predictor. Loss is masked on pixels that have a confident object.
 
@@ -70,19 +70,39 @@ def centroid_offset_loss(offset_preds, confident_segments, gamma=0.8):
     """
 
     n_preds = len(offset_preds)
+    size = confident_segments.shape[-2:]
+    H,W = size
+    scale_factor = torch.tensor([(H-1.)/2., (W-1.)/2.])
+    scale_factor = scale_factor.view(1,2,1,1,1).float().to(confident_segments.device)
+
     loss = 0.0
 
     criterion = CentroidMaskTarget(thresh=0.5)
-    coords = criterion.coords_grid(batch=1, size=confident_segments.shape[-2:],
+    coords = criterion.coords_grid(batch=1, size=size,
                                    device=confident_segments.device,
                                    normalize=True, to_xy=False)
+    coords = coords.unsqueeze(2) # [1,2,1,H,w]
     conf_masks = _segments_to_masks(confident_segments) # len B list
 
-    target = []
     for b, masks in enumerate(conf_masks):
-        centroids, loss_masks = criterion(masks)
-        print("centroids", centroids.shape)
-        print("loss masks", loss_masks)
+        ## centroids are [1,2,K]
+        ## loss masks are [1,K,H,W]
+        centroids, loss_masks = criterion(masks[None])
+        loss_masks = loss_masks[:,None] # [1,1,K,H,W]
+        offset_target = centroids[...,None,None] * loss_masks - coords
+        offset_target = offset_target * scale_factor # scale to px
+        num_px = loss_masks.detach().sum(dim=(-2,-1)).clamp(min=1.)
+
+        for i in range(n_preds):
+            i_weight = gamma ** (n_preds - i - 1)
+            i_loss = (offset_preds[i][b:b+1,:,None] - offset_target).square()
+            i_loss = (i_loss * loss_masks).sum(dim=(-2,-1)) / num_px
+            loss += i_weight * i_loss.mean()
+
+    metrics = {'loss': loss.item()}
+
+    return (loss, metrics)
+
 
 if __name__ == '__main__':
 
@@ -93,8 +113,15 @@ if __name__ == '__main__':
         [2,3,3,3,0],
         [2,0,3,0,4]]).long()
     gt_segments = torch.stack([gt_segments, gt_segments * 2], 0)
+    gt_segments[1,-1,-1] = 0
     print(gt_segments.shape)
     print(gt_segments)
-    
 
+    preds = [2.5 * torch.randn([2,2,5,5]) for _ in range(3)]
 
+    l, m = multicentroid_offset_loss(preds, gt_segments)
+    print(m)
+
+    preds = [10 * torch.randn([2,1,5,5]) for _ in range(3)]
+    l,m = thingness_loss(preds, gt_segments)
+    print(m)
