@@ -2,6 +2,10 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import cmocean.cm as cmo
+from tqdm import tqdm
+from PIL import ImageColor
+import json, os, sys
+from pathlib import Path
 
 def tensor_to_arr(tensor, ex=0):
     if len(tensor.shape) == 4:
@@ -14,9 +18,6 @@ def viz(tensor, ex=0):
         im = im / 255.0
     plt.imshow(im)
 
-from PIL import ImageColor
-import json
-from pathlib import Path
 
 def get_palette(colors_json='./colors.json', i=0):
     colors = json.loads(Path(colors_json).read_text(encoding='utf-8'))
@@ -46,11 +47,15 @@ def plot_image_pred_gt_segments(data,
                                 bg_color=(0,0,0),
                                 figsize=(12,4),
                                 show_titles=False,
-                                save_path=None):
+                                save_path=None,
+                                do_plot=True):
 
     assert all((k in data.keys() for k in ('image', 'pred_segments', 'gt_segments')))
 
-    img = data['image'].permute(1,2,0).numpy()
+    img = data['image'].permute(1,2,0)
+    if 'cuda' in str(img.device):
+        img = img.cpu()
+    img = img.numpy()
     size = img.shape[0:2]
 
     gt = np.zeros(size)
@@ -68,23 +73,80 @@ def plot_image_pred_gt_segments(data,
         colors.insert(0, bg_color)
         gt, pred = seg_to_rgb(gt, colors), seg_to_rgb(pred, colors)
 
-    fig, axes = plt.subplots(1,3,figsize=figsize)
+
     plots = [img, pred, gt]
     titles = ['image', 'pred', 'gt']
 
-    for i,ax in enumerate(axes):
-        if cmap in cmo.cmap_d.keys():
-            cmap = cmo.cmap_d[cmap]
+    if do_plot:
+        fig, axes = plt.subplots(1,3,figsize=figsize)
+        for i,ax in enumerate(axes):
+            if cmap in cmo.cmap_d.keys():
+                cmap = cmo.cmap_d[cmap]
+            if isinstance(cmap, int):
+                ax.imshow(plots[i])
+            else:
+                ax.imshow(plots[i], cmap=cmap, vmin=0, vmax=(plots[i].max()+1))
+            if show_titles:
+                ax.set_title(titles[i])
+            ax.set_xticks([])
+            ax.set_yticks([])
+        plt.tight_layout()
+
+        if save_path is not None:
+            plt.savefig(save_path, bbox_inches='tight', format='svg', transparent=True)
+        plt.show()
+
+    out = {titles[p]:plots[p] for p in range(3)}
+    out['cmap'] = cmap
+    return out
+
+def compare_models(results_dir, models, ex=0, cmap='twilight', bg_color=(255,255,255), save_path=None):
+    """Plot the matched segmentation results for each of the models in models List[Path]"""
+    img = gts = None
+    preds = {}
+
+    ## load results
+    for i,m in enumerate(tqdm(models)):
+        results_path = os.path.join(results_dir, m)
+        results = sorted(os.listdir(results_path))
+        data = torch.load(os.path.join(results_path, results[ex]))
+
+        if i == 0:
+            img = data['image']
+            gts = data['gt_segments']
+
+        preds[m] = data['pred_segments']
+
+
+    model_plots = {
+        m: plot_image_pred_gt_segments(data={'image': img, 'gt_segments': gts, 'pred_segments': preds[m]},
+                                       cmap=cmap, bg_color=bg_color, do_plot=False)
+        for m in models}
+
+    ## plot results
+    _cm = model_plots[models[0]]['cmap']
+    fig, axes = plt.subplots(1, len(models) + 2, figsize=(8 + 4*len(models), 4))
+    def _imshow(ax, plot):
         if isinstance(cmap, int):
-            ax.imshow(plots[i])
+            ax.imshow(plot)
         else:
-            ax.imshow(plots[i], cmap=cmap, vmin=0, vmax=(plots[i].max()+1))
-        if show_titles:
-            ax.set_title(titles[i])
+            ax.imshow(plot, cmap=_cm, vmin=0, vmax=(plot.max()+1))
+
+    axes[0].imshow(model_plots[models[0]]['image'])
+    _imshow(axes[-1], model_plots[models[0]]['gt'])
+    axes[0].set_title('image')
+    axes[-1].set_title('gt')
+
+    for i,m in enumerate(models):
+        _imshow(axes[i+1], model_plots[models[i]]['pred'])
+        axes[i+1].set_title(m)
+
+    for ax in axes:
         ax.set_xticks([])
         ax.set_yticks([])
-    plt.tight_layout()
 
+    plt.tight_layout()
     if save_path is not None:
         plt.savefig(save_path, bbox_inches='tight', format='svg', transparent=True)
     plt.show()
+    return model_plots
