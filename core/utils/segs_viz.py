@@ -72,7 +72,7 @@ def plot_image_pred_gt_segments(data,
     pred = np.zeros(size)
 
     N, _N = len(data['pred_segments']), len(data['gt_segments'])
-    assert N == _N
+    assert N == _N, (N, _N)
 
     ## may need to resample
     if resize is None:
@@ -127,8 +127,8 @@ def compare_models(results_dir, models, ex=0,
                    show_titles=True,
                    save_path=None):
     """Plot the matched segmentation results for each of the models in models List[Path]"""
-    img = gts = None
-    preds = {}
+    img = None
+    preds, gts = {}, {}
 
     ## load results
     for i,m in enumerate(tqdm(models)):
@@ -138,14 +138,13 @@ def compare_models(results_dir, models, ex=0,
 
         if i == 0:
             img = data['image']
-            gts = data['gt_segments']
-
+        gts[m] = data['gt_segments']
         preds[m] = data['pred_segments']
 
 
     model_plots = {
         m: plot_image_pred_gt_segments(
-            data={'image': img, 'gt_segments': gts, 'pred_segments': preds[m]},
+            data={'image': img, 'gt_segments': gts[m], 'pred_segments': preds[m]},
             cmap=cmap, bg_color=bg_color, bg_thresh=bg_thresh, resize=resize, do_plot=False)
         for m in models}
 

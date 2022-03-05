@@ -520,6 +520,7 @@ class TdwAffinityDataset(torch.utils.data.Dataset):
                  dataset_dir='/mnt/fs6/honglinc/dataset/tdw_playroom_small/',
                  aff_r=5,
                  training=False,
+                 phase='val',
                  size=None,
                  splits='[0-9]*',
                  test_splits='[0-3]', # trainval: 4
@@ -537,6 +538,7 @@ class TdwAffinityDataset(torch.utils.data.Dataset):
                  is_test=True
     ):
         self.training = training
+        self.phase = phase
         self.frame_idx = frame_idx
         self.delta_time = delta_time
 
@@ -550,10 +552,15 @@ class TdwAffinityDataset(torch.utils.data.Dataset):
             self.file_list = sorted(glob(os.path.join(dataset_dir, 'images',
                                                     'model_split_'+splits,
                                                     filepattern)))
-        else:
+        elif self.phase == 'val':
             self.file_list = sorted(glob(os.path.join(dataset_dir, 'images',
                                                     'model_split_'+test_splits,
                                                     test_filepattern)))
+        elif self.phase == "safari":
+            self.file_list = sorted(glob.glob(os.path.join(dataset_dir, 'images', 'playroom_simple_v7safari', '*')))
+        elif self.phase == "cylinder":
+            self.file_list = sorted(glob.glob(os.path.join(dataset_dir, 'images', 'cylinder_miss_contain_boxroom', '*')))
+
 
         self.precomputed_raft = False
         if not (single_supervision or full_supervision):
@@ -713,15 +720,19 @@ class TdwAffinityDataset(torch.utils.data.Dataset):
 
         # remove zone id from the raw_segment_map
         meta_key = 'playroom_large_v3_images/' + file_name.split('/images/')[-1] + '.hdf5'
-        zone_id = int(self.meta[meta_key]['zone'])
-        raw_segment_map[raw_segment_map == zone_id] = 0
+        if meta_key in self.meta.keys():
+            zone_id = int(self.meta[meta_key]['zone'])
+            raw_segment_map[raw_segment_map == zone_id] = 0
 
         # convert raw segment ids to a range in [0, n]
         _, segment_map = torch.unique(raw_segment_map, return_inverse=True)
         segment_map -= segment_map.min()
 
         # gt_moving_mask
-        gt_moving = raw_segment_map == int(self.meta[meta_key]['moving'])
+        if meta_key in self.meta.keys() and 'moving' in self.meta[meta_key].keys():
+            gt_moving = raw_segment_map == int(self.meta[meta_key]['moving'])
+        else:
+            gt_moving = None
 
         return raw_segment_map, segment_map, gt_moving
 
