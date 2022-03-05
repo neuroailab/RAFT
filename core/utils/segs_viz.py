@@ -42,9 +42,18 @@ def seg_to_rgb(seg, colors):
         rgb[(seg == i),:] = c
     return rgb / 255.
 
+def iou(pred, target):
+    I = (pred & target).sum()
+    U = (pred | target).sum() - I
+    return (float(I) / max(U, 1))
+
+def filter_by_iou(mask, target, thresh=0.5):
+    return np.zeros_like(mask) if (iou(mask, target) > thresh) else mask
+
 def plot_image_pred_gt_segments(data,
                                 cmap='twilight',
                                 bg_color=(0,0,0),
+                                bg_thresh=0.5,
                                 figsize=(12,4),
                                 show_titles=False,
                                 save_path=None,
@@ -65,8 +74,9 @@ def plot_image_pred_gt_segments(data,
     assert N == _N
 
     for n in range(N):
+        bg = sum(data['gt_segments']) < 1
         gt += data['gt_segments'][n].astype(gt.dtype) * (n+1)
-        pred += data['pred_segments'][n].astype(pred.dtype) * (n+1)
+        pred += filter_by_iou(data['pred_segments'][n], bg, bg_thresh).astype(pred.dtype) * (n+1)
 
     if isinstance(cmap, int):
         colors = get_palette(i=cmap)
@@ -100,7 +110,9 @@ def plot_image_pred_gt_segments(data,
     out['cmap'] = cmap
     return out
 
-def compare_models(results_dir, models, ex=0, cmap='twilight', bg_color=(255,255,255), save_path=None):
+def compare_models(results_dir, models, ex=0, cmap='twilight', bg_color=(255,255,255), bg_thresh=0.5,
+                   show_titles=True,
+                   save_path=None):
     """Plot the matched segmentation results for each of the models in models List[Path]"""
     img = gts = None
     preds = {}
@@ -120,7 +132,7 @@ def compare_models(results_dir, models, ex=0, cmap='twilight', bg_color=(255,255
 
     model_plots = {
         m: plot_image_pred_gt_segments(data={'image': img, 'gt_segments': gts, 'pred_segments': preds[m]},
-                                       cmap=cmap, bg_color=bg_color, do_plot=False)
+                                       cmap=cmap, bg_color=bg_color, bg_thresh=bg_thresh, do_plot=False)
         for m in models}
 
     ## plot results
@@ -134,12 +146,14 @@ def compare_models(results_dir, models, ex=0, cmap='twilight', bg_color=(255,255
 
     axes[0].imshow(model_plots[models[0]]['image'])
     _imshow(axes[-1], model_plots[models[0]]['gt'])
-    axes[0].set_title('image')
-    axes[-1].set_title('gt')
+    if show_titles:
+        axes[0].set_title('image')
+        axes[-1].set_title('gt')
 
     for i,m in enumerate(models):
         _imshow(axes[i+1], model_plots[models[i]]['pred'])
-        axes[i+1].set_title(m)
+        if show_titles:
+            axes[i+1].set_title(m)
 
     for ax in axes:
         ax.set_xticks([])
