@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from torchvision.transforms import Resize
 
 from torch.utils.data import DataLoader
 from raft import RAFT, ThingsClassifier, CentroidRegressor
@@ -33,8 +34,11 @@ def thingness_loss(thingness_preds, confident_segments, gamma=0.8):
     n_preds = len(thingness_preds)
     loss = 0.0
 
+    size = confident_segments.shape[-2:]
+    resize = Resize(size)
+
     criterion = nn.BCEWithLogitsLoss(reduction='none')
-    loss_fn = lambda logits, labels: criterion(logits, labels)
+    loss_fn = lambda logits, labels: criterion(resize(logits), labels)
 
     ## target is any pixel that has a nonzero label
     target = (confident_segments > 0)[:,None].float() # [B,1,H,W] float
@@ -75,6 +79,12 @@ def multicentroid_offset_loss(offset_preds, confident_segments, gamma=0.8):
     scale_factor = torch.tensor([(H-1.)/2., (W-1.)/2.])
     scale_factor = scale_factor.view(1,2,1,1,1).float().to(confident_segments.device)
 
+    _resize = Resize(size)
+    def resize(logits):
+        h,w = logits.shape[-2:]
+        scale = torch.tensor([H/h,W/w]).to(logits.device).float()
+        return _resize(logits) * scale.view(1,2,1,1)
+
     loss = 0.0
 
     criterion = CentroidMaskTarget(thresh=0.5)
@@ -95,7 +105,8 @@ def multicentroid_offset_loss(offset_preds, confident_segments, gamma=0.8):
 
         for i in range(n_preds):
             i_weight = gamma ** (n_preds - i - 1)
-            i_loss = (offset_preds[i][b:b+1,:,None] - offset_target).square()
+            preds = resize(offset_preds[i][b:b+1])[:,:,None] # [1,2,1,H,W]
+            i_loss = (preds - offset_target).square()
             i_loss = (i_loss * loss_masks).sum(dim=(-2,-1)) / num_px
             loss += i_weight * i_loss.mean()
 
@@ -122,6 +133,6 @@ if __name__ == '__main__':
     l, m = multicentroid_offset_loss(preds, gt_segments)
     print(m)
 
-    preds = [10 * torch.randn([2,1,5,5]) for _ in range(3)]
+    preds = [10 * torch.randn([2,1,20,20]) for _ in range(3)]
     l,m = thingness_loss(preds, gt_segments)
     print(m)
