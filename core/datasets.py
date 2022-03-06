@@ -557,9 +557,9 @@ class TdwAffinityDataset(torch.utils.data.Dataset):
                                                     'model_split_'+test_splits,
                                                     test_filepattern)))
         elif self.phase == "safari":
-            self.file_list = sorted(glob.glob(os.path.join(dataset_dir, 'images', 'playroom_simple_v7safari', '*')))
+            self.file_list = sorted(glob(os.path.join(dataset_dir, 'images', 'playroom_simple_v7safari', '*')))
         elif self.phase == "cylinder":
-            self.file_list = sorted(glob.glob(os.path.join(dataset_dir, 'images', 'cylinder_miss_contain_boxroom', '*')))
+            self.file_list = sorted(glob(os.path.join(dataset_dir, 'images', 'cylinder_miss_contain_boxroom', '*')))
 
 
         self.precomputed_raft = False

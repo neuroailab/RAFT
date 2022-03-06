@@ -19,7 +19,7 @@ def viz(tensor, ex=0):
     plt.imshow(im)
 
 
-def get_palette(colors_json='./colors.json', i=0):
+def get_palette(colors_json='/home/dbear/RAFT-TDW/notebooks/colors.json', i=0):
     colors = json.loads(Path(colors_json).read_text(encoding='utf-8'))
     colors_hex = colors[i]
     colors_rgb = [ImageColor.getcolor(col, "RGB") for col in colors_hex]
@@ -136,7 +136,7 @@ def compare_models(results_dir, models, ex=0,
         results = sorted(os.listdir(results_path))
         data = torch.load(os.path.join(results_path, results[ex]))
 
-        if i == 0:
+        if i == (len(models) - 1):
             img = data['image']
         gts[m] = data['gt_segments']
         preds[m] = data['pred_segments']
