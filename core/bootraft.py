@@ -92,6 +92,7 @@ class BootRaft(nn.Module):
 
 CentroidMaskTarget = partial(targets.CentroidTarget, normalize=True, return_masks=True)
 ForegroundMaskTarget = partial(targets.MotionForegroundTarget, resolution=8, num_masks=32)
+IsMovingTarget = partial(targets.IsMovingTarget, warp_radius=3, thresh=0.51)
 
 class KpPrior(nn.Module):
     def __init__(self,

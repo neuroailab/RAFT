@@ -16,8 +16,15 @@ import torch.optim as optim
 import torch.nn.functional as F
 
 from torch.utils.data import DataLoader
-from raft import RAFT, ThingsClassifier, CentroidRegressor
-from bootraft import BootRaft, CentroidMaskTarget, ForegroundMaskTarget
+from raft import (RAFT,
+                  ThingsClassifier,
+                  CentroidRegressor,
+                  MotionClassifier)
+
+from bootraft import (BootRaft,
+                      CentroidMaskTarget,
+                      ForegroundMaskTarget,
+                      IsMovingTarget)
 import evaluate
 import datasets
 
@@ -190,12 +197,15 @@ def train(args):
     if args.model.lower() == 'bootraft':
         model_cls = BootRaft
         print("used BootRaft")
-    elif args.model.lower() == 'thingness':
+    elif args.model.lower() == 'thingness' or args.model.lower() == 'occlusion':
         model_cls = ThingsClassifier
         print("used ThingnessClassifier")
-    elif args.model.lower() == 'centroid':
+    elif args.model.lower() == 'centroid' or args.model.lower() == 'motion_centroid':
         model_cls = CentroidRegressor
         print("used CentroidRegressor")
+    elif args.model.lower() == 'motion':
+        model_cls = MotionClassifier
+        print("used MotionClassifier")
     else:
         model_cls = RAFT
         print("used RAFT")
@@ -237,6 +247,17 @@ def train(args):
     target_net = None
     if (args.stage.lower() == 'davis') and (args.model.lower() in ['thingness', 'centroid']):
         target_net = nn.DataParallel(ForegroundMaskTarget(mask_input=True, get_connected_component=True), device_ids=args.gpus).cuda()
+    elif args.model.lower() in ['occlusion', 'motion', 'motion_centroid']:
+        assert args.no_aug, "Can't use data augmentation with motion target"
+        target_net = nn.DataParallel(IsMovingTarget(normalize_error=None,
+                                                    normalize_features=None,
+                                                    size=None), device_ids=args.gpus).cuda()
+
+        ## teacher just stacks the images
+        selfsup = True
+        def teacher(img1, img2, **kwargs):
+            assert img1.dtype == img2.dtype == torch.float32
+            return (None, torch.stack([img1, img2], 1) / 255.0)
 
     train_loader = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, model)
@@ -272,12 +293,16 @@ def train(args):
             ## get the self-supervision
             if selfsup:
                 _, flow = teacher(image1, image2, iters=args.teacher_iters, test_mode=True)
+                # print("model", args.model, "target", flow.shape, flow.amin(), flow.amax())
 
             ## process the gt
             if target_net is not None:
                 flow = target_net(flow)
+                if len(flow.shape) == 5:
+                    flow = flow.squeeze(1)
+                # print("model", flow.shape, flow.amin(), flow.amax())
 
-            if args.model.lower() == 'centroid':
+            if args.model.lower() in ['centroid', 'motion_centroid']:
                 loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=args.scale_centroids)
             else:
                 loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma, pos_weight=args.pos_weight)
@@ -386,10 +411,12 @@ def load_model(load_path,
             cls = BootRaft
         elif 'raft' in name:
             cls = RAFT
-        elif 'thing' in name:
+        elif ('thing' in name) or ('occlusion' in name):
             cls = ThingsClassifier
         elif 'centroid' in name:
             cls = CentroidRegressor
+        elif 'motion' in name:
+            cls = MotionClassifier
         else:
             raise ValueError("Couldn't identify a model class associated with %s" % name)
         return cls

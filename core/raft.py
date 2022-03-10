@@ -173,3 +173,13 @@ class CentroidRegressor(RAFT):
         ## static model
         img1, img2 = args[:2]
         return super().forward(img1, img1, *args[2:], **kwargs, output_hidden=True)
+
+class MotionClassifier(RAFT):
+    """Like a Things Classifier but uses motion"""
+    def __init__(self, args):
+        super().__init__(args)
+        self.classifier_head = FlowHead(input_dim=self.hidden_dim, out_dim=1)
+
+    def forward(self, *args, **kwargs):
+        img1, img2 = args[:2]
+        return super().forward(img1, img2, *args[2:], **kwargs, output_hidden=True)
