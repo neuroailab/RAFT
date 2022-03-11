@@ -1,7 +1,8 @@
 #!/bin/bash
 mkdir -p checkpoints
 # 3.10.22
-python -u train.py --name motion-rnd1-tdw-bs2-small-fullplay-tr0-8 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 2 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --small --no_aug --full_playroom --filepattern *[0-8] --motion_thresh 0.1 --motion_ckpt checkpoints/20000_motion-tdw-bs8-small-fullplay-tr0-8.pth --features_ckpt checkpoints/20000_mocentroid-tdw-bs8-fullplay-tr0-8.pth --teacher_iters 1
+python -u train.py --name motion-molo100-tdw-bs8-small-fullplay-tr0-8 --stage tdw --validation z --gpus 0 1 2 3 --num_steps 100000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --small --no_aug --full_playroom --filepattern *[0-8] --use_motion_loss --loss_scale 100.0
+# python -u train.py --name motion-rnd1-tdw-bs2-small-fullplay-tr0-8 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 2 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --small --no_aug --full_playroom --filepattern *[0-8] --motion_thresh 0.1 --motion_ckpt checkpoints/20000_motion-tdw-bs8-small-fullplay-tr0-8.pth --features_ckpt checkpoints/20000_mocentroid-tdw-bs8-fullplay-tr0-8.pth --teacher_iters 1
 # python -u train.py --name motion-tdw-bs8-small-fullplay-tr0-8 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 8 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --small --no_aug --full_playroom --filepattern *[0-8]
 # 2.27.22
 # python -u train.py --name thingness-tdw-selfsupSintel-bs4-small-20frames-fullplay-tr0-8 --stage tdw --validation z --gpus 0 1 2 3 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model thingness --teacher_ckpt models/raft-sintel.pth --teacher_iters 18 --small --max_frame 25 --full_playroom --filepattern *[0-8] --restore_ckpt checkpoints/thingness-tdw-selfsupSintel-bs8-small-20frames-fullplay-tr0-8

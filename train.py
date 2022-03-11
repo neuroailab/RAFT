@@ -55,7 +55,6 @@ VAL_FREQ = 5000
 # datasets without supervision
 SELFSUP_DATASETS = ['robonet', 'dsr']
 
-
 def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_flow=0.5, pos_weight=1.0):
     """ Loss function defined over sequence of flow predictions """
 
@@ -100,6 +99,24 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
 
     return flow_loss, metrics
 
+def motion_loss(motion_preds, errors, valid, gamma=0.8, loss_scale=1.0):
+
+    n_predictions = len(motion_preds)
+    loss = 0.0
+
+    errors_s, errors_m = errors.split([1,1], -3)
+    def loss_fn(preds):
+        p_motion = torch.sigmoid(preds)
+        return (p_motion*errors_m + (1-p_motion)*errors_s).mean()
+
+    for i in range(n_predictions):
+        i_weight = gamma**(n_predictions - i - 1)
+        i_loss = loss_fn(motion_preds[i])
+        loss += i_weight * i_loss * loss_scale
+
+    metrics = {'loss': loss.item()}
+
+    return loss, metrics
 
 def centroid_loss(dcent_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_flow=0.5, scale_to_pixels=False):
 
@@ -256,6 +273,7 @@ def train(args):
         assert args.no_aug, "Can't use data augmentation with motion target"
         target_net = nn.DataParallel(IsMovingTarget(normalize_error=None,
                                                     normalize_features=None,
+                                                    get_errors=args.use_motion_loss,
                                                     size=None), device_ids=args.gpus).cuda()
 
         ## teacher just stacks the images
@@ -311,6 +329,8 @@ def train(args):
 
             if args.model.lower() in ['centroid', 'motion_centroid']:
                 loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=args.scale_centroids)
+            elif args.use_motion_loss and args.model.lower() == 'motion':
+                loss, metrics = motion_loss(flow_predictions, flow, valid, args.gamma, loss_scale=args.loss_scale)
             else:
                 loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma, pos_weight=args.pos_weight)
             scaler.scale(loss).backward()
@@ -395,6 +415,8 @@ def get_args(cmd=None):
     parser.add_argument('--motion_ckpt', help='checkpoint for a pretrained motion model')
     parser.add_argument('--features_ckpt', help='checkpoint for a pretrained features model')
     parser.add_argument('--motion_thresh', type=float, default=0.1)
+    parser.add_argument('--use_motion_loss', action='store_true')
+    parser.add_argument('--loss_scale', type=float, default=1.0)
     parser.add_argument('--scale_centroids', action='store_true')
     parser.add_argument('--training_frames', help="a JSON file of frames to train from")
 
