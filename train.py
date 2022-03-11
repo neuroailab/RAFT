@@ -242,6 +242,11 @@ def train(args):
         teacher.cuda()
         teacher.eval()
         teacher.module.freeze_bn()
+    elif (args.motion_ckpt is not None) or (args.features_ckpt is not None):
+        selfsup = True
+        teacher = load_motion_teacher(args)
+    else:
+        teacher = None
 
     ## if training on Thingness or Centroids on DAVIS, we construct a foreground mask out of the flow
     target_net = None
@@ -255,9 +260,11 @@ def train(args):
 
         ## teacher just stacks the images
         selfsup = True
-        def teacher(img1, img2, **kwargs):
-            assert img1.dtype == img2.dtype == torch.float32
-            return (None, torch.stack([img1, img2], 1) / 255.0)
+        print("teacher", teacher)
+        if teacher is None:
+            def teacher(img1, img2, **kwargs):
+                assert img1.dtype == img2.dtype == torch.float32
+                return (None, torch.stack([img1, img2], 1) / 255.0)
 
     train_loader = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, model)
@@ -385,6 +392,9 @@ def get_args(cmd=None):
     parser.add_argument('--model', type=str, default='RAFT', help='Model class')
     parser.add_argument('--teacher_ckpt', help='checkpoint for a pretrained RAFT. If None, use GT')
     parser.add_argument('--teacher_iters', type=int, default=18)
+    parser.add_argument('--motion_ckpt', help='checkpoint for a pretrained motion model')
+    parser.add_argument('--features_ckpt', help='checkpoint for a pretrained features model')
+    parser.add_argument('--motion_thresh', type=float, default=0.1)
     parser.add_argument('--scale_centroids', action='store_true')
     parser.add_argument('--training_frames', help="a JSON file of frames to train from")
 
@@ -394,6 +404,8 @@ def get_args(cmd=None):
     else:
         args = parser.parse_args(cmd)
     return args
+
+
 
 def load_model(load_path,
                model_class=None,
@@ -438,7 +450,7 @@ def load_model(load_path,
     model = nn.DataParallel(cls(args), device_ids=args.gpus)
     if load_path is not None:
         did_load = model.load_state_dict(torch.load(load_path), strict=False)
-        print(did_load)
+        print(did_load, type(model.module).__name__)
     if cuda:
         model.cuda()
     model.train(train)
@@ -446,6 +458,43 @@ def load_model(load_path,
         model.module.freeze_bn()
 
     return model
+
+def load_motion_teacher(args):
+
+    ## get a path for the motion classifier
+    motion_path = args.motion_ckpt
+    if motion_path is not None:
+        motion_model = load_model(motion_path, small=True, cuda=True, train=False)
+    else:
+        motion_model = None
+
+    ## get a path for the features
+    features_path = args.features_ckpt
+    if features_path is not None:
+        features_model = load_model(features_path, small=False, cuda=True, train=False)
+    else:
+        features_model = None
+
+    ## the teacher model
+    def teacher(img1, img2, **kwargs):
+
+        if motion_model is not None:
+            _, motion = motion_model(img1, img2, **kwargs)
+            motion = (torch.sigmoid(motion) > args.motion_thresh).float()
+        else:
+            motion = torch.ones_like(img).mean(-3, True)
+
+        if features_model is not None:
+            _, feats1 = features_model(img1, img1, **kwargs)
+            _, feats2 = features_model(img2, img2, **kwargs)
+            feats = torch.stack([feats1, feats2], 1)
+        else:
+            feats = torch.stack([img1, img2], 1) / 255.0
+
+        target_feats = motion[:,None] * feats
+        return (None, target_feats)
+
+    return teacher
 
 if __name__ == '__main__':
     args = get_args()
