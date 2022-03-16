@@ -287,6 +287,7 @@ class TdwFlowDataset(FlowDataset):
                  testing_frames=None,
                  get_gt_flow=False,
                  get_gt_segments=False,
+                 get_backward_frame=False,
                  scale_to_pixels=True,
                  aug_params=None):
         super(TdwFlowDataset, self).__init__(aug_params)
@@ -306,6 +307,7 @@ class TdwFlowDataset(FlowDataset):
         self.delta_time = self.dT = delta_time
         self.min_start_frame = min_start_frame
         self.max_start_frame = max_start_frame
+        self.get_backward_frame = get_backward_frame
         self.select_frames_per_file = select_frames_per_file
         self.scale_to_pixels = scale_to_pixels
 
@@ -415,10 +417,10 @@ class TdwFlowDataset(FlowDataset):
 
     def _get_image(self, f, frame = 0, return_zeros=True):
         return self._get_pass(f, "images", frame=frame, return_zeros=return_zeros)
-    def _get_image_pair(self, f, frame = 0):
+    def _get_image_pair(self, f, frame = 0, delta_time = 1):
         img1 = self._get_pass(f, "images", frame)
         try:
-            img2 = self._get_pass(f, "images", frame + self.dT)
+            img2 = self._get_pass(f, "images", frame + delta_time)
         except:
             img2 = img1
         return (img1, img2)
@@ -485,7 +487,11 @@ class TdwFlowDataset(FlowDataset):
             i_frame = np.random.randint(min_frame, max_frame)
 
         ## get a pair of images
-        img1, img2 = self._get_image_pair(f, i_frame)
+        img1, img2 = self._get_image_pair(f, i_frame, self.dT)
+        if self.get_backward_frame:
+            img0 = self._get_image(f, i_frame - self.dT)
+        else:
+            img0 = None
 
         ## get the flow
         flow = self._get_flow(f, i_frame) if self.get_gt_flow else {}
@@ -510,9 +516,11 @@ class TdwFlowDataset(FlowDataset):
 
         to_tensor = lambda x: torch.from_numpy(x).permute(2, 0, 1).float()
 
-        if not self.get_gt_segments:
+        if not self.get_gt_segments and (img0 is None):
             return (to_tensor(img1), to_tensor(img2), to_tensor(flow), torch.from_numpy(valid).float())
-        else:
+        elif (img0 is not None):
+            return (to_tensor(img1), to_tensor(img2), to_tensor(img0), torch.from_numpy(valid).float())
+        elif self.get_gt_segments:
             return (to_tensor(img1), to_tensor(img2), to_tensor(flow), segments)
 
 class TdwAffinityDataset(torch.utils.data.Dataset):
@@ -832,9 +840,10 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             dataset_names=dataset_names,
             filepattern=args.filepattern or "*",
             test_filepattern=args.test_filepattern or "*9",
-            min_start_frame=5,
+            min_start_frame=6 if (args.model == 'motion') else 5,
             max_start_frame=(args.max_frame if args.max_frame > 0 else None),
-            training_frames=args.training_frames
+            training_frames=args.training_frames,
+            get_backward_frame=(args.model == 'motion')
         )
 
     if args.stage == 'robonet':

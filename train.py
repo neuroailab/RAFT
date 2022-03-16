@@ -19,7 +19,8 @@ from torch.utils.data import DataLoader
 from raft import (RAFT,
                   ThingsClassifier,
                   CentroidRegressor,
-                  MotionClassifier)
+                  MotionClassifier,
+                  MotionPropagator)
 
 from bootraft import (BootRaft,
                       CentroidMaskTarget,
@@ -271,18 +272,20 @@ def train(args):
         target_net = nn.DataParallel(ForegroundMaskTarget(mask_input=True, get_connected_component=True), device_ids=args.gpus).cuda()
     elif args.model.lower() in ['occlusion', 'motion', 'motion_centroid']:
         assert args.no_aug, "Can't use data augmentation with motion target"
-        target_net = nn.DataParallel(IsMovingTarget(normalize_error=None,
-                                                    normalize_features=None,
-                                                    get_errors=args.use_motion_loss,
-                                                    size=None), device_ids=args.gpus).cuda()
+        target_net = nn.DataParallel(IsMovingTarget(
+            thresh=None,
+            normalize_error=None,
+            normalize_features=None,
+            get_errors=args.use_motion_loss,
+            size=None), device_ids=args.gpus).cuda()
 
         ## teacher just stacks the images
         selfsup = True
         print("teacher", teacher)
         if teacher is None:
-            def teacher(img1, img2, **kwargs):
-                assert img1.dtype == img2.dtype == torch.float32
-                return (None, torch.stack([img1, img2], 1) / 255.0)
+            def teacher(img1, img2, img0, **kwargs):
+                assert img1.dtype == img2.dtype == img0.dtype == torch.float32
+                return (None, torch.stack([img0, img1, img2], 1) / 255.0)
 
     train_loader = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, model)
@@ -302,6 +305,8 @@ def train(args):
             if selfsup:
                 image1, image2 = [x.cuda() for x in data_blob[:2]]
                 valid = None
+                if args.model.lower() == 'motion':
+                    image0 = data_blob[2].cuda()
             elif len(data_blob) == 3:
                 image1, image2, flow = [x.cuda() for x in data_blob]
                 valid = None
@@ -316,7 +321,9 @@ def train(args):
             flow_predictions = model(image1, image2, iters=args.iters)
 
             ## get the self-supervision
-            if selfsup:
+            if selfsup and args.model.lower() == 'motion':
+                _, flow = teacher(image1, image2, image0, iters=args.teacher_iters, test_mode=True)
+            elif selfsup:
                 _, flow = teacher(image1, image2, iters=args.teacher_iters, test_mode=True)
                 # print("model", args.model, "target", flow.shape, flow.amin(), flow.amax())
 
@@ -325,6 +332,7 @@ def train(args):
                 flow = target_net(flow)
                 if len(flow.shape) == 5:
                     flow = flow.squeeze(1)
+                flow = (flow > args.motion_thresh).float()
                 # print("model", flow.shape, flow.amin(), flow.amax())
 
             if args.model.lower() in ['centroid', 'motion_centroid']:
@@ -414,9 +422,17 @@ def get_args(cmd=None):
     parser.add_argument('--teacher_iters', type=int, default=18)
     parser.add_argument('--motion_ckpt', help='checkpoint for a pretrained motion model')
     parser.add_argument('--features_ckpt', help='checkpoint for a pretrained features model')
+    # motion propagation
     parser.add_argument('--motion_thresh', type=float, default=0.1)
+    parser.add_argument('--affinity_radius', type=int, default=1)
+    parser.add_argument('--affinity_nonlinearity', type=str, default='softmax')
+    parser.add_argument('--num_propagation_iters', type=int, default=50)
+    parser.add_argument('--num_sample_points', type=int, default=2048)
+    parser.add_argument('--predict_every', type=int, default=5)
+    parser.add_argument('--binarize_motion', action='store_true')
     parser.add_argument('--use_motion_loss', action='store_true')
     parser.add_argument('--loss_scale', type=float, default=1.0)
+
     parser.add_argument('--scale_centroids', action='store_true')
     parser.add_argument('--training_frames', help="a JSON file of frames to train from")
 
@@ -437,7 +453,7 @@ def load_model(load_path,
                freeze_bn=False,
                **kwargs):
 
-    path = Path(load_path)
+    path = Path(load_path) if load_path else None
 
     def _get_model_class(name):
         cls = None
@@ -451,6 +467,8 @@ def load_model(load_path,
             cls = CentroidRegressor
         elif 'motion' in name:
             cls = MotionClassifier
+        elif 'prop' in name:
+            cls = MotionPropagator
         else:
             raise ValueError("Couldn't identify a model class associated with %s" % name)
         return cls

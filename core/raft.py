@@ -8,6 +8,9 @@ from extractor import BasicEncoder, SmallEncoder
 from corr import CorrBlock, AlternateCorrBlock
 from utils.utils import bilinear_sampler, coords_grid, upflow8
 
+## fire propagation
+import dorsalventral.models.fire_propagation as prop
+
 try:
     autocast = torch.cuda.amp.autocast
 except:
@@ -183,3 +186,40 @@ class MotionClassifier(RAFT):
     def forward(self, *args, **kwargs):
         img1, img2 = args[:2]
         return super().forward(img1, img2, *args[2:], **kwargs, output_hidden=True)
+
+class MotionPropagator(RAFT):
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.r = args.affinity_radius
+        self.k = self.r*2 + 1
+        self.K = self.k**2
+        self.null_idx = (self.K - 1) // 2
+        self.classifier_head = FlowHead(input_dim=self.hidden_dim, out_dim=self.K)
+
+        if args.affinity_nonlinearity == 'softmax':
+            f = nn.Softmax(dim=-3)
+        elif args.affinity_nonlinearity == 'softmaxmax':
+            f = prop.utils.SoftmaxMax(dim=-3)
+        elif args.affinity_nonlinearity == 'sigmoid':
+            f = nn.Sigmoid()
+
+        self.propagator = prop.FirePropagation(
+            thresh=args.motion_thresh,
+            binarize_state=args.binarize_motion,
+            num_iters=args.num_propagation_iters,
+            num_sample_points=args.num_sample_points,
+            predict_every=args.predict_every,
+            motion_nonlinearity=torch.sigmoid,
+            affinity_nonlinearity=f
+        )
+
+    def forward(self, *args, **kwargs):
+        img1, img2 = args[:2]
+        motion_affinities = super().forward(img1, img2, *args[2:], **kwargs, output_hidden=True)[-1]
+        motion, fire, preds = self.propagator(motion_affinities)
+
+        if kwargs.get('test_mode', False):
+            return (fire, motion)
+        else:
+            return preds
