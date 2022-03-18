@@ -424,9 +424,8 @@ def get_args(cmd=None):
     parser.add_argument('--features_ckpt', help='checkpoint for a pretrained features model')
     # motion propagation
     parser.add_argument('--motion_thresh', type=float, default=0.1)
-    parser.add_argument('--target_thresh', type=float, default=0.1)
     parser.add_argument('--affinity_radius', type=int, default=1)
-    parser.add_argument('--affinity_radius_inference', type=int, default=1)
+    parser.add_argument('--affinity_radius_inference', type=int, default=1o)
     parser.add_argument('--static_affinities', action='store_true')
     parser.add_argument('--affinity_nonlinearity', type=str, default='softmax')
     parser.add_argument('--num_propagation_iters', type=int, default=50)

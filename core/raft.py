@@ -195,7 +195,9 @@ class MotionPropagator(RAFT):
         self.k = self.r*2 + 1
         self.K = self.k**2
         self.null_idx = (self.K - 1) // 2
-        self.classifier_head = FlowHead(input_dim=self.hidden_dim, out_dim=self.K)
+        self.classifier_head = FlowHead(
+            input_dim=self.hidden_dim,
+            out_dim=(self.K-1))
 
         if args.affinity_nonlinearity == 'softmax':
             f = nn.Softmax(dim=-3)
@@ -206,20 +208,41 @@ class MotionPropagator(RAFT):
 
         self.propagator = prop.FirePropagation(
             thresh=args.motion_thresh,
+            target_thresh=args.target_thresh,
             binarize_state=args.binarize_motion,
             num_iters=args.num_propagation_iters,
             num_sample_points=args.num_sample_points,
             predict_every=args.predict_every,
             motion_nonlinearity=torch.sigmoid,
-            affinity_nonlinearity=f
+            affinity_nonlinearity=f,
+            affinity_nonlinearity_inference=None,
+            affinity_radius_inference=args.affinity_radius_inference
         )
+
+        ## load a pretrained classifier
+        self.motion_model = nn.DataParallel(MotionClassifier(args),
+                                            device_ids=args.gpus)
+        if self.args.motion_ckpt is not None:
+            did_load = self.motion_model.load_state_dict(
+                torch.load(self.args.motion_ckpt), strict=False)
+            self.motion_model.eval()
+            self.motion_model.module.freeze_bn()
+            print("motion model", did_load)
+
+        self.static_affinities = args.static_affinities
+
 
     def forward(self, *args, **kwargs):
         img1, img2 = args[:2]
-        motion_affinities = super().forward(img1, img2, *args[2:], **kwargs, output_hidden=True)[-1]
-        motion, fire, preds = self.propagator(motion_affinities)
+        motion = self.motion_model(img1, img2, *args[2:], **kwargs)[-1]
+        _img2 = img1 if self.static_affinities else img2
+        motion_affinities = super().forward(img1, _img2, *args[2:], **kwargs, output_hidden=True)[-1]
+        motion, fire, preds = self.propagator(
+            x=motion,
+            A=motion_affinities
+        )
 
         if kwargs.get('test_mode', False):
-            return (fire, motion)
+            return (motion_affinities, fire, motion)
         else:
             return preds
