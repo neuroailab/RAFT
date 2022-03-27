@@ -32,15 +32,10 @@ class RAFT(nn.Module):
         if args.small:
             self.hidden_dim = hdim = 96
             self.context_dim = cdim = 64
-            args.corr_levels = 4
-            # args.corr_radius = 3
-            args.corr_radius = 4
 
         else:
             self.hidden_dim = hdim = 128
             self.context_dim = cdim = 128
-            args.corr_levels = 4
-            args.corr_radius = 4
 
         if 'dropout' not in self.args:
             self.args.dropout = 0
@@ -110,7 +105,7 @@ class RAFT(nn.Module):
         if self.args.alternate_corr:
             corr_fn = AlternateCorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
         else:
-            corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
+            corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius, num_levels=self.args.corr_levels)
 
         # run the context network
         with autocast(enabled=self.args.mixed_precision):
@@ -197,7 +192,7 @@ class MotionPropagator(RAFT):
         self.null_idx = (self.K - 1) // 2
         self.classifier_head = FlowHead(
             input_dim=self.hidden_dim,
-            out_dim=(self.K-1))
+            out_dim=self.K)
 
         if args.affinity_nonlinearity == 'softmax':
             f = nn.Softmax(dim=-3)
@@ -206,20 +201,25 @@ class MotionPropagator(RAFT):
         elif args.affinity_nonlinearity == 'sigmoid':
             f = nn.Sigmoid()
 
-        self.propagator = prop.FirePropagation(
-            thresh=args.motion_thresh,
-            target_thresh=args.target_thresh,
-            binarize_state=args.binarize_motion,
-            num_iters=args.num_propagation_iters,
-            num_sample_points=args.num_sample_points,
-            predict_every=args.predict_every,
-            motion_nonlinearity=torch.sigmoid,
-            affinity_nonlinearity=f,
-            affinity_nonlinearity_inference=None,
-            affinity_radius_inference=args.affinity_radius_inference
-        )
+        # self.propagator = prop.FirePropagation(
+        #     thresh=args.motion_thresh,
+        #     target_thresh=args.target_thresh,
+        #     positive_thresh=args.positive_thresh,
+        #     negative_thresh=args.negative_thresh,
+        #     binarize_state=args.binarize_motion,
+        #     num_iters=args.num_propagation_iters,
+        #     num_sample_points=args.num_sample_points,
+        #     predict_every=args.predict_every,
+        #     motion_nonlinearity=torch.sigmoid,
+        #     affinity_nonlinearity=f,
+        #     affinity_nonlinearity_inference=None,
+        #     affinity_radius_inference=args.affinity_radius_inference
+        # )
+
+        self.propagator = prop.ChainPropagation()
 
         ## load a pretrained classifier
+        args.corr_levels = args.corr_radius = 4
         self.motion_model = nn.DataParallel(MotionClassifier(args),
                                             device_ids=args.gpus)
         if self.args.motion_ckpt is not None:
@@ -230,19 +230,24 @@ class MotionPropagator(RAFT):
             print("motion model", did_load)
 
         self.static_affinities = args.static_affinities
-
+        print("static?", self.static_affinities)
 
     def forward(self, *args, **kwargs):
         img1, img2 = args[:2]
         motion = self.motion_model(img1, img2, *args[2:], **kwargs)[-1]
         _img2 = img1 if self.static_affinities else img2
-        motion_affinities = super().forward(img1, _img2, *args[2:], **kwargs, output_hidden=True)[-1]
-        motion, fire, preds = self.propagator(
-            x=motion,
-            A=motion_affinities
-        )
 
-        if kwargs.get('test_mode', False):
-            return (motion_affinities, fire, motion)
-        else:
-            return preds
+        motion_affinities = super().forward(img1, _img2, *args[2:], **kwargs, output_hidden=True)[-1]
+        # motion, fire, preds = self.propagator(
+        #     x=motion,
+        #     A=motion_affinities
+        # )
+
+        preds = self.propagator(motion_affinities, target_input=motion)
+
+        # if kwargs.get('test_mode', False):
+        #     return motion_affinities, preds
+        # else:
+        #     return [preds]
+
+        return motion_affinities, preds

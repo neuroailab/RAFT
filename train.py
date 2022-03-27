@@ -404,6 +404,8 @@ def get_args(cmd=None):
     parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
 
     parser.add_argument('--iters', type=int, default=12)
+    parser.add_argument('--corr_levels', type=int, default=4)
+    parser.add_argument('--corr_radius', type=int, default=4)
     parser.add_argument('--wdecay', type=float, default=.00005)
     parser.add_argument('--epsilon', type=float, default=1e-8)
     parser.add_argument('--clip', type=float, default=1.0)
@@ -425,6 +427,8 @@ def get_args(cmd=None):
     # motion propagation
     parser.add_argument('--motion_thresh', type=float, default=0.1)
     parser.add_argument('--target_thresh', type=float, default=0.1)
+    parser.add_argument('--positive_thresh', type=float, default=0.4)
+    parser.add_argument('--negative_thresh', type=float, default=0.1)
     parser.add_argument('--affinity_radius', type=int, default=1)
     parser.add_argument('--affinity_radius_inference', type=int, default=1)
     parser.add_argument('--static_affinities', action='store_true')
