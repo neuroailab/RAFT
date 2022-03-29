@@ -9,6 +9,7 @@ from raft import RAFT, CentroidRegressor, ThingsClassifier
 import dorsalventral.models.bootnet as bootnet
 import dorsalventral.models.layers as layers
 import dorsalventral.models.targets as targets
+import dorsalventral.models.fire_propagation as fprop
 
 import sys
 
@@ -89,6 +90,23 @@ class BootRaft(nn.Module):
         if test_mode:
             return (self.decoder.delta_coords, x)
         return x
+
+class BBNet(fprop.BipartiteBootNet):
+    """Wraps BipartiteBootNet"""
+    def __init__(self, args):
+        self.args = args
+        super(BBNet, self).__init__(
+            affinity_radius=args.affinity_radius,
+            motion_params={'hidden_dim': 128, 'num_iters': args.iters},
+            static_params={'hidden_dim': 128, 'num_iters': args.iters},
+            motion_target_params={},
+            static_target_params={},
+            motion_sequence_loss=True,
+            static_sequence_loss=False,
+            sequence_loss_gamma=args.gamma,
+            mode=args.train_mode
+        )
+
 
 CentroidMaskTarget = partial(targets.CentroidTarget, normalize=True, return_masks=True)
 ForegroundMaskTarget = partial(targets.MotionForegroundTarget, resolution=8, num_masks=32)

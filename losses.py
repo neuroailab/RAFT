@@ -114,6 +114,24 @@ def multicentroid_offset_loss(offset_preds, confident_segments, gamma=0.8):
 
     return (loss, metrics)
 
+def motion_loss(motion_preds, errors, valid, gamma=0.8, loss_scale=1.0):
+
+    n_predictions = len(motion_preds)
+    loss = 0.0
+
+    errors_s, errors_m = errors.split([1,1], -3)
+    def loss_fn(preds):
+        p_motion = torch.sigmoid(preds)
+        return (p_motion*errors_m + (1-p_motion)*errors_s).mean()
+
+    for i in range(n_predictions):
+        i_weight = gamma**(n_predictions - i - 1)
+        i_loss = loss_fn(motion_preds[i])
+        loss += i_weight * i_loss * loss_scale
+
+    metrics = {'loss': loss.item()}
+
+    return loss, metrics
 
 if __name__ == '__main__':
 

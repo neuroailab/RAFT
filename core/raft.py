@@ -178,6 +178,17 @@ class MotionClassifier(RAFT):
         super().__init__(args)
         self.classifier_head = FlowHead(input_dim=self.hidden_dim, out_dim=1)
 
+    def compute_loss(preds, target, gamma=0.8, size=None):
+        n_preds = len(preds)
+        loss = 0.0
+        loss_fn = nn.BCEWithLogitsLoss(reduction='none')
+
+        for i in range(n_preds):
+            i_weight = gamma ** (n_preds - i - 1)
+            i_loss = loss_fn(preds[i], target).mean()
+            loss += i_weight * i_loss
+        return loss
+
     def forward(self, *args, **kwargs):
         img1, img2 = args[:2]
         return super().forward(img1, img2, *args[2:], **kwargs, output_hidden=True)
