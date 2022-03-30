@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision.transforms import Resize
 
 from update import BasicUpdateBlock, SmallUpdateBlock, FlowHead
 from extractor import BasicEncoder, SmallEncoder
@@ -70,8 +71,10 @@ class RAFT(nn.Module):
         # optical flow computed as difference: flow = coords1 - coords0
         return coords0, coords1
 
-    def upsample_flow(self, flow, mask):
+    @staticmethod
+    def upsample_flow(flow, mask):
         """ Upsample flow field [H/8, W/8, 2] -> [H, W, 2] using convex combination """
+
         N, C, H, W = flow.shape
         mask = mask.view(N, 1, 9, 8, 8, H, W)
         mask = torch.softmax(mask, dim=2)
@@ -145,7 +148,7 @@ class RAFT(nn.Module):
             flow_predictions.append(flow_up)
 
         if test_mode:
-            return coords1 - coords0, flow_up
+            return up_mask, flow_up
 
         return flow_predictions
 
@@ -177,6 +180,9 @@ class MotionClassifier(RAFT):
     def __init__(self, args):
         super().__init__(args)
         self.classifier_head = FlowHead(input_dim=self.hidden_dim, out_dim=1)
+
+    def set_mode(self, mode):
+        self.mode = mode
 
     def compute_loss(preds, target, gamma=0.8, size=None):
         n_preds = len(preds)

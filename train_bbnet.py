@@ -51,16 +51,9 @@ def count_parameters(model):
 
 def fetch_optimizer(args, model):
     """ Create the optimizer and learning rate scheduler """
-    mode = getattr(model, 'mode', None)
+    mode = getattr(model.module, 'mode', None)
     print("training with mode --- %s" % mode)
     params = model.parameters()
-    # print(type(model.module).__name__)
-    # if mode == 'train_static':
-    #     params = model.module.static_model.parameters()
-    # elif mode == 'train_motion':
-    #     params = model.module.motion_model.parameters()
-    # else:
-    #     params = model.module.parameters()
     optimizer = optim.AdamW(params, lr=args.lr, weight_decay=args.wdecay, eps=args.epsilon)
 
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, args.lr, args.num_steps+100,
@@ -123,12 +116,23 @@ def get_student_and_teacher(args):
     if args.restore_ckpt is not None:
         did_load = student.load_state_dict(torch.load(args.restore_ckpt), strict=False)
         print("student", did_load)
+    elif args.motion_ckpt is not None:
+        state_dict = {k:v for k,v in torch.load(args.motion_ckpt).items()
+                      if 'motion_model' in k}
+        did_load = student.load_state_dict(state_dict, strict=False)
+        print("loaded motion weights only, not", did_load)
+    elif args.static_ckpt is not None:
+        state_dict = {k:v for k,v in torch.load(args.static_ckpt).items()
+                      if 'static_model' in k}
+        did_load = student.load_state_dict(state_dict, strict=False)
+        print("loaded static weights only, not", did_load)
+
     student.cuda()
 
     ## set the training mode of the student
     student.train()
     assert args.train_mode in ['train_static', 'train_motion', 'train_both'], args.train_mode
-    student.mode = args.train_mode
+    student.module.set_mode(args.train_mode)
 
     # load the teacher
     if args.teacher_ckpt is None:
@@ -140,8 +144,7 @@ def get_student_and_teacher(args):
     print("teacher", did_load)
     teacher.cuda()
     teacher.eval()
-    teacher.mode = args.train_mode
-
+    teacher.module.set_mode(args.train_mode)
 
     return (student, teacher)
 
@@ -162,13 +165,18 @@ def train(args):
             assert img1.dtype == img2.dtype == img0.dtype == torch.float32
             video = torch.stack([img0, img1, img2], 1) / 255.0
             target = (teacher(video) > args.target_thresh).float()
-            return target
+            return (None, target)
 
     else:
         assert args.no_aug
         def get_target(img1, img2, img0, **kwargs):
-            target = teacher(img1, img2, iters=args.teacher_iters, test_mode=True)[-1]
-            return target
+            teacher_preds = teacher(img1, img2, iters=args.teacher_iters, test_mode=True)
+            target = teacher_preds[-1]
+            upsample_mask = None
+            if args.upsample:
+                upsample_mask = teacher_preds[0]
+
+            return (upsample_mask, target)
 
     train_loader = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, student)
@@ -186,9 +194,12 @@ def train(args):
         for i_batch, data_blob in enumerate(train_loader):
             optimizer.zero_grad()
             image1, image2, image0 = [x.cuda() for x in data_blob[:3]]
-            target = get_target(image1, image2, image0)
+            upsample_mask, target = get_target(image1, image2, image0)
             predictions = student(
-                image1, image2, teacher_motion=target, iters=args.iters
+                image1, image2,
+                teacher_motion=target,
+                upsample_mask=upsample_mask,
+                iters=args.iters
             )
 
             # get the loss
@@ -224,7 +235,7 @@ def train(args):
 
                 logger.write_dict(results)
                 student.train()
-                student.mode = args.train_mode
+                student.module.set_mode(args.train_mode)
 
             total_steps += 1
 
@@ -248,6 +259,8 @@ def get_args(cmd=None):
     parser.add_argument('--filepattern', type=str, default="*", help="which files to train on tdw")
     parser.add_argument('--test_filepattern', type=str, default="*9", help="which files to val on tdw")
     parser.add_argument('--restore_ckpt', help="restore checkpoint")
+    parser.add_argument('--motion_ckpt', help="restore checkpoint for motion")
+    parser.add_argument('--static_ckpt', help="restore checkpoint for static")
     parser.add_argument('--small', action='store_true', help='use small model')
     parser.add_argument('--validation', type=str, nargs='+')
     parser.add_argument('--val_freq', type=int, default=5000, help='validation and checkpoint frequency')
@@ -279,6 +292,7 @@ def get_args(cmd=None):
     parser.add_argument('--train_mode', type=str, default='train_static', help='Which mode to train bbnet')
     parser.add_argument('--teacher_model', type=str, default='motion', help='Model class')
     parser.add_argument('--teacher_ckpt', help='checkpoint for a pretrained RAFT. If None, use GT')
+    parser.add_argument('--upsample', action='store_true', help='whether to upsample the motion target')
     parser.add_argument('--teacher_iters', type=int, default=6)
     parser.add_argument('--target_thresh', type=float, default=0.1)
     parser.add_argument('--affinity_radius', type=int, default=5)
@@ -293,7 +307,9 @@ def get_args(cmd=None):
 
 
 
-def load_model(load_path,
+def load_model(load_path=None,
+               motion_load_path=None,
+               static_load_path=None,
                model_class=None,
                small=False,
                cuda=False,
@@ -331,6 +347,18 @@ def load_model(load_path,
     if load_path is not None:
         did_load = model.load_state_dict(torch.load(load_path), strict=False)
         print(did_load, type(model.module).__name__)
+
+    if motion_load_path is not None:
+        state_dict = {k:v for k,v in torch.load(motion_load_path).items()
+                      if 'motion_model' in k}
+        did_load = model.load_state_dict(state_dict, strict=False)
+        print("loaded motion weights only, not", did_load)
+    elif static_load_path is not None:
+        state_dict = {k:v for k,v in torch.load(static_load_path).items()
+                      if 'static_model' in k}
+        did_load = model.load_state_dict(state_dict, strict=False)
+        print("loaded static weights only, not", did_load)
+
     if cuda:
         model.cuda()
     model.train(train)
@@ -338,43 +366,6 @@ def load_model(load_path,
         model.module.freeze_bn()
 
     return model
-
-def load_motion_teacher(args):
-
-    ## get a path for the motion classifier
-    motion_path = args.motion_ckpt
-    if motion_path is not None:
-        motion_model = load_model(motion_path, small=True, cuda=True, train=False)
-    else:
-        motion_model = None
-
-    ## get a path for the features
-    features_path = args.features_ckpt
-    if features_path is not None:
-        features_model = load_model(features_path, small=False, cuda=True, train=False)
-    else:
-        features_model = None
-
-    ## the teacher model
-    def teacher(img1, img2, **kwargs):
-
-        if motion_model is not None:
-            _, motion = motion_model(img1, img2, **kwargs)
-            motion = (torch.sigmoid(motion) > args.motion_thresh).float()
-        else:
-            motion = torch.ones_like(img).mean(-3, True)
-
-        if features_model is not None:
-            _, feats1 = features_model(img1, img1, **kwargs)
-            _, feats2 = features_model(img2, img2, **kwargs)
-            feats = torch.stack([feats1, feats2], 1)
-        else:
-            feats = torch.stack([img1, img2], 1) / 255.0
-
-        target_feats = motion[:,None] * feats
-        return (None, target_feats)
-
-    return teacher
 
 if __name__ == '__main__':
     args = get_args()
