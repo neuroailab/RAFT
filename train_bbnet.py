@@ -136,7 +136,7 @@ def get_student_and_teacher(args):
 
     # load the teacher
     if args.teacher_ckpt is None:
-        return (student, teacher)
+        return (student, None)
 
     teacher_cls = MotionClassifier if (args.teacher_model.lower() == 'motion') else BBNet
     teacher = nn.DataParallel(teacher_cls(args), device_ids=args.gpus)
@@ -144,14 +144,14 @@ def get_student_and_teacher(args):
     print("teacher", did_load)
     teacher.cuda()
     teacher.eval()
-    teacher.module.set_mode(args.train_mode)
+    teacher.module.set_mode('teach_motion')
 
     return (student, teacher)
 
 def train(args):
 
     student, teacher = get_student_and_teacher(args)
-    if teacher is None:
+    if teacher is None and args.model.lower() == 'motion':
         assert args.no_aug, "Can't use data augmentation with motion target"
         teacher = nn.DataParallel(IsMovingTarget(
             thresh=None,
@@ -167,7 +167,10 @@ def train(args):
             target = (teacher(video) > args.target_thresh).float()
             return (None, target)
 
-    else:
+    elif teacher is None:
+        def get_target(img1, img2, img0, **kwargs):
+            return (None, None)
+    elif args.teacher_model.lower() == 'motion':
         assert args.no_aug
         def get_target(img1, img2, img0, **kwargs):
             teacher_preds = teacher(img1, img2, iters=args.teacher_iters, test_mode=True)
@@ -177,6 +180,12 @@ def train(args):
                 upsample_mask = teacher_preds[0]
 
             return (upsample_mask, target)
+    elif args.teacher_model.lower() == 'bbnet':
+        def get_target(img1, img2, img0, **kwargs):
+            target = teacher(img1, img2, **kwargs)
+            if isinstance(target, list):
+                target = target[-1]
+            return (None, target.detach())
 
     train_loader = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, student)
@@ -245,7 +254,7 @@ def train(args):
 
     logger.close()
     PATH = 'checkpoints/%s.pth' % args.name
-    torch.save(model.state_dict(), PATH)
+    torch.save(student.state_dict(), PATH)
 
     return PATH
 
