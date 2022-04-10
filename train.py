@@ -229,6 +229,7 @@ def train(args):
         print("used RAFT")
     model = nn.DataParallel(model_cls(args), device_ids=args.gpus)
     print("Parameter Count: %d" % count_parameters(model))
+    print("Using ground truth? %s" % args.supervised)
 
     if args.restore_ckpt is not None:
         did_load = model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
@@ -270,12 +271,12 @@ def train(args):
     target_net = None
     if (args.stage.lower() == 'davis') and (args.model.lower() in ['thingness', 'centroid']):
         target_net = nn.DataParallel(ForegroundMaskTarget(mask_input=True, get_connected_component=True), device_ids=args.gpus).cuda()
-    elif args.model.lower() in ['occlusion', 'motion', 'motion_centroid']:
+    elif (args.model.lower() in ['occlusion', 'motion', 'motion_centroid']) and not args.supervised:
         assert args.no_aug, "Can't use data augmentation with motion target"
         target_net = nn.DataParallel(IsMovingTarget(
-            thresh=None,
-            normalize_error=None,
-            normalize_features=None,
+            thresh=args.motion_thresh,
+            normalize_error=False,
+            normalize_features=False,
             get_errors=args.use_motion_loss,
             size=None), device_ids=args.gpus).cuda()
 
@@ -305,7 +306,7 @@ def train(args):
             if selfsup:
                 image1, image2 = [x.cuda() for x in data_blob[:2]]
                 valid = None
-                if args.model.lower() == 'motion':
+                if args.model.lower() in ['motion', 'occlusion']:
                     image0 = data_blob[2].cuda()
             elif len(data_blob) == 3:
                 image1, image2, flow = [x.cuda() for x in data_blob]
@@ -321,7 +322,7 @@ def train(args):
             flow_predictions = model(image1, image2, iters=args.iters)
 
             ## get the self-supervision
-            if selfsup and args.model.lower() == 'motion':
+            if selfsup and args.model.lower() in ['motion', 'occlusion']:
                 _, flow = teacher(image1, image2, image0, iters=args.teacher_iters, test_mode=True)
             elif selfsup:
                 _, flow = teacher(image1, image2, iters=args.teacher_iters, test_mode=True)
@@ -332,7 +333,7 @@ def train(args):
                 flow = target_net(flow)
                 if len(flow.shape) == 5:
                     flow = flow.squeeze(1)
-                flow = (flow > args.motion_thresh).float()
+                # flow = (flow > args.motion_thresh).float()
                 # print("model", flow.shape, flow.amin(), flow.amax())
 
             if args.model.lower() in ['centroid', 'motion_centroid']:
@@ -420,6 +421,7 @@ def get_args(cmd=None):
 
     ## model class
     parser.add_argument('--model', type=str, default='RAFT', help='Model class')
+    parser.add_argument('--supervised', action='store_true', help='whether to supervise')
     parser.add_argument('--teacher_ckpt', help='checkpoint for a pretrained RAFT. If None, use GT')
     parser.add_argument('--teacher_iters', type=int, default=18)
     parser.add_argument('--motion_ckpt', help='checkpoint for a pretrained motion model')

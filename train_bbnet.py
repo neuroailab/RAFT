@@ -16,7 +16,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 
 from torch.utils.data import DataLoader
-from raft import MotionClassifier
+from raft import (MotionClassifier,
+                  ThingsClassifier)
 from bootraft import (IsMovingTarget,
                       BBNet)
 import evaluate
@@ -332,6 +333,8 @@ def load_model(load_path=None,
         cls = None
         if 'motion' in name:
             cls = MotionClassifier
+        elif ('thingness' in name) or ('occlusion' in name):
+            cls = ThingsClassifier
         elif 'bbnet' in name:
             cls = BBNet
         else:

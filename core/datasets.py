@@ -523,6 +523,125 @@ class TdwFlowDataset(FlowDataset):
         elif self.get_gt_segments:
             return (to_tensor(img1), to_tensor(img2), to_tensor(flow), segments)
 
+class TdwPngDataset(TdwFlowDataset):
+
+    def __init__(self,
+                 root='/mnt/fs6/honglinc/dataset/tdw_playroom_small/',
+                 split='training',
+                 dataset_names='[0-9]*',
+                 test_dataset_names='[0-3]',
+                 filepattern='*',
+                 test_filepattern='*9',
+                 delta_time=1,
+                 min_start_frame=5,
+                 max_start_frame=5,
+                 get_gt_flow=False,
+                 get_gt_segments=False,
+                 get_backward_frame=False,
+                 scale_to_pixels=True,
+                 training_frames=None,
+                 testing_frames=None,
+                 aug_params=None):
+        FlowDataset.__init__(self, aug_params)
+
+        ## set files
+        self.split = split
+        self.training = (split == 'training')
+        meta_path = os.path.join(root, 'meta.json')
+        self.meta = json.loads(Path(meta_path).open().read())
+
+        self.train_files = sorted(
+            glob(os.path.join(root, 'images',
+                              'model_split_'+dataset_names,
+                              filepattern)))
+
+        self.test_files = sorted(
+            glob(os.path.join(root, 'images',
+                              'model_split_'+test_dataset_names,
+                              test_filepattern)))
+
+        self.is_test = (not self.training)
+
+        # frames and which tensors to get
+        self.delta_time = self.dT = delta_time
+        self.delta_time = self.dT = delta_time
+        self.min_start_frame = min_start_frame
+        self.max_start_frame = max_start_frame
+        self.get_backward_frame = get_backward_frame
+        self.scale_to_pixels = scale_to_pixels
+
+        self.get_gt_flow = get_gt_flow or (not self.is_test)
+        self.get_gt_segments = get_gt_segments
+        if self.get_gt_segments:
+            self.transform_segments = transforms.Compose([
+                ToTensor(), RgbToIntSegments()])
+
+        ## the frames for training given by a json file
+        self.training_frames = training_frames
+        self.testing_frames = testing_frames
+
+    def __len__(self):
+        return len(self.file_list)
+
+    def eval(self):
+        self.is_test = True
+    def train(self, do_train=True):
+        self.is_test = not do_train
+
+    def _get_pass(self, f, pass_name, frame = 0, return_zeros=True):
+        pass
+
+    def _get_image(self, f, frame = 0, return_zeros=True):
+        pass
+
+    def _get_image_pair(self, f, frame = 0, delta_time = 1):
+        pass
+
+    def _get_flow(self, f, frame = 0):
+        pass
+
+    def _get_objects(self, f, frame = 0):
+        pass
+
+    def get_video(self, f, frame_start = 0, video_length = 2):
+        pass
+
+    @staticmethod
+    def _object_id_hash(objects, val=256, dtype=torch.long):
+        C = objects.shape[0]
+        objects = objects.to(dtype)
+        out = torch.zeros_like(objects[0:1, ...])
+        for c in range(C):
+            scale = val ** (C - 1 - c)
+            out += scale * objects[c:c + 1, ...]
+        return out
+
+    def process_segmentation_color(self, seg_color, file_name):
+        # convert segmentation color to integer segment id
+        raw_segment_map = self._object_id_hash(seg_color, val=256, dtype=torch.long)
+        raw_segment_map = raw_segment_map.squeeze(0)
+
+        # remove zone id from the raw_segment_map
+        meta_key = 'playroom_large_v3_images/' + file_name.split('/images/')[-1] + '.hdf5'
+        if meta_key in self.meta.keys():
+            zone_id = int(self.meta[meta_key]['zone'])
+            raw_segment_map[raw_segment_map == zone_id] = 0
+
+        # convert raw segment ids to a range in [0, n]
+        _, segment_map = torch.unique(raw_segment_map, return_inverse=True)
+        segment_map -= segment_map.min()
+
+        # gt_moving_mask
+        if meta_key in self.meta.keys() and 'moving' in self.meta[meta_key].keys():
+            gt_moving = raw_segment_map == int(self.meta[meta_key]['moving'])
+        else:
+            gt_moving = None
+
+        return raw_segment_map, segment_map, gt_moving
+
+    # def __getitem__(self, idx)
+
+
 class TdwAffinityDataset(torch.utils.data.Dataset):
     def __init__(self,
                  dataset_dir='/mnt/fs6/honglinc/dataset/tdw_playroom_small/',
@@ -840,10 +959,10 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             dataset_names=dataset_names,
             filepattern=args.filepattern or "*",
             test_filepattern=args.test_filepattern or "*9",
-            min_start_frame=6 if (args.model == 'motion') else 5,
+            min_start_frame=6 if (args.model in ['motion', 'occlusion']) else 5,
             max_start_frame=(args.max_frame if args.max_frame > 0 else None),
             training_frames=args.training_frames,
-            get_backward_frame=(args.model == 'motion')
+            get_backward_frame=((args.model in ['motion','occlusion']) and not args.supervised)
         )
 
     if args.stage == 'robonet':
