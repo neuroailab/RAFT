@@ -111,6 +111,10 @@ class BBNet(fprop.BipartiteBootNet):
 CentroidMaskTarget = partial(targets.CentroidTarget, normalize=True, return_masks=True)
 ForegroundMaskTarget = partial(targets.MotionForegroundTarget, resolution=8, num_masks=32)
 IsMovingTarget = partial(targets.IsMovingTarget, warp_radius=3)
+DiffusionTarget = partial(fprop.DiffusionTarget,
+                          warp_radius=3,
+                          boundary_radius=5,
+                          num_iters=200)
 
 class KpPrior(nn.Module):
     def __init__(self,

@@ -1,8 +1,13 @@
 #!/bin/bash
 mkdir -p checkpoints
+# 4.12.22
+# python -u train.py --name motion-rnd0-tdw-bs4-small-dtarg-cthr075 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --no_aug --max_frame 6 --small --diffusion_target --downsample_factor 2 --motion_thresh 0.01 --target_thresh 0.75 --num_samples 8
+python -u train.py --name motion-rnd0-tdw-bs1-small-dtarg-cthr075-pr1 --stage tdw --validation z --gpus 0 --num_steps 100000 --batch_size 1 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --no_aug --max_frame 6 --small --diffusion_target --downsample_factor 2 --motion_thresh 0.01 --target_thresh 0.75 --num_samples 4 --patch_radius 1
 # 4.7.22
 # python -u train.py --name motion-rnd0-tdw-bs4-small-fullplay-zthr1 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --no_aug --full_playroom --filepattern *[0-8] --max_frame 6 --motion_thresh 1.0 --small
-python -u train.py --name motion-rnd0-tdw-bs4-small-fullplay-zthr02 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --no_aug --full_playroom --filepattern *[0-8] --max_frame 6 --motion_thresh 0.2 --small
+# python -u train.py --name motion-rnd0-tdw-bs4-small-fullplay-zthr02 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --no_aug --full_playroom --filepattern *[0-8] --max_frame 6 --motion_thresh 0.2 --small
+# python -u train.py --name motion-rnd0-tdw-bs4-small-fullplay-zthr3 --stage tdw --validation z --gpus 0 1 2 3 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --no_aug --full_playroom --filepattern *[0-8] --max_frame 6 --motion_thresh 3.0 --small
+# python -u train.py --name motion-rnd0-tdw-bs4-small-zthr3 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --no_aug --max_frame 6 --motion_thresh 3.0 --small
 # 4.6.22
 # python -u train.py --name motion-rnd0-tdw-bs4-small-fullplay-th05 --stage tdw --validation z --gpus 0 1 2 3 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model motion --no_aug --full_playroom --filepattern *[0-8] --max_frame 6 --motion_thresh 0.05 --small
 # python -u train.py --name occlusion-rnd0-tdw-bs4-small-fullplay-th05 --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model occlusion --no_aug --full_playroom --filepattern *[0-8] --max_frame 6 --motion_thresh 0.05 --small

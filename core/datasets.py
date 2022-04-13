@@ -502,7 +502,7 @@ class TdwFlowDataset(FlowDataset):
         ## close the hdf5
         f.close()
 
-        if self.is_test:
+        if self.is_test and (img0 is None):
             return (torch.from_numpy(img1).permute(2, 0, 1).float(),
                     torch.from_numpy(img2).permute(2, 0, 1).float(),
                     torch.from_numpy(flow).permute(2, 0, 1).float() if self.get_gt_flow else {})
@@ -959,10 +959,10 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             dataset_names=dataset_names,
             filepattern=args.filepattern or "*",
             test_filepattern=args.test_filepattern or "*9",
-            min_start_frame=6 if (args.model in ['motion', 'occlusion']) else 5,
+            min_start_frame=6 if (args.model in ['motion', 'occlusion', 'thingness']) else 5,
             max_start_frame=(args.max_frame if args.max_frame > 0 else None),
             training_frames=args.training_frames,
-            get_backward_frame=((args.model in ['motion','occlusion']) and not args.supervised)
+            get_backward_frame=((args.model in ['motion','occlusion', 'thingness']) and not args.supervised)
         )
 
     if args.stage == 'robonet':
