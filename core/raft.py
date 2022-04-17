@@ -164,6 +164,24 @@ class ThingsClassifier(RAFT):
         img1, img2 = args[:2]
         return super().forward(img1, img1, *args[2:], **kwargs, output_hidden=True)
 
+class BoundaryClassifier(RAFT):
+
+    def __init__(self, args):
+        super().__init__(args)
+        out_dim = 3 if self.args.orientation_type == 'regression' else 9
+        self.classifier_head = FlowHead(
+            input_dim=self.hidden_dim, out_dim=out_dim)
+        self.static_input = self.args.static_input
+
+    def forward(self, *args, **kwargs):
+        img1, img2 = args[:2]
+        out = super().forward(
+            img1,
+            img1 if self.static_input else img2,
+            *args[2:], **kwargs, output_hidden=True
+        )
+        return out
+
 class CentroidRegressor(RAFT):
 
     def __init__(self, args):

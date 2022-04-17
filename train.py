@@ -14,12 +14,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from torchvision import transforms
 
 from torch.utils.data import DataLoader
 from raft import (RAFT,
                   ThingsClassifier,
                   CentroidRegressor,
                   MotionClassifier,
+                  BoundaryClassifier,
                   MotionPropagator)
 
 from bootraft import (BootRaft,
@@ -70,10 +72,13 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
     else:
         valid = (valid >= 0.5) & (mag < max_flow)
 
-    _ds = lambda x: F.avg_pool2d(
-        x,
-        args.downsample_factor,
-        stride=args.downsample_factor)
+    if list(flow_gt.shape[-2:]) != list(flow_preds[-1].shape[-2:]):
+        _ds = lambda x: F.avg_pool2d(
+            x,
+            args.downsample_factor * args.teacher_downsample_factor,
+            stride=args.downsample_factor * args.teacher_downsample_factor)
+    else:
+        _ds = lambda x: x
 
     if flow_preds[-1].shape[-3] == 1:
         flow_gt = (mag[:,None] > min_flow).float()
@@ -105,6 +110,64 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
     }
 
     return flow_loss, metrics
+
+def boundary_loss(boundary_preds,
+                  boundary_target,
+                  valid,
+                  gamma=0.8,
+                  boundary_scale=1.0,
+                  orientation_scale=1.0,
+                  **kwargs):
+
+    n_predictions = len(boundary_preds)
+    b_loss = c_loss = loss = 0.0
+
+    # break up boundary_target
+    b_target, c_target, c_target_discrete = boundary_target.split([1,2,8], 1)
+    num_px = b_target.sum(dim=(-3,-2,-1)).clamp(min=1.)
+
+    def _split_preds(x):
+        dim = x.shape[-3]
+        if dim == 3:
+            return x.split([1,2], -3)
+        elif dim == 9:
+            c1, b, c2 = x.split([4,1,4], -3)
+            return b, torch.cat([c1, c2], -3)
+
+    b_loss_fn = nn.BCEWithLogitsLoss(reduction='none')
+    if boundary_preds[-1].shape[1] == 3:
+        c_loss_fn = lambda logits, labels: (logits - labels).abs().sum(1)
+    else:
+        c_loss_fn = nn.CrossEntropyLoss(reduction='none')
+        c_target = c_target_discrete.argmax(1)
+
+    ds = args.downsample_factor * args.teacher_downsample_factor
+    if list(b_target.shape[-2:]) != list(boundary_preds[-1].shape[-2:]):
+        _ds = lambda x: F.avg_pool2d(x, ds, stride=ds)
+    else:
+        _ds = lambda x:x
+
+    for i in range(n_predictions):
+        i_weight = gamma ** (n_predictions - i - 1)
+        b_pred, c_pred = _split_preds(_ds(boundary_preds[i]))
+        i_b_loss = b_loss_fn(b_pred, b_target).mean()
+        i_c_loss = (c_loss_fn(c_pred, c_target)[:,None] * b_target).sum((-3,-2,-1))
+        i_c_loss = (i_c_loss / num_px).mean()
+
+        b_loss += i_b_loss * i_weight
+        c_loss += i_c_loss * i_weight
+        i_loss = i_b_loss * boundary_scale +\
+                 i_c_loss * orientation_scale
+        loss += i_loss * i_weight
+
+    metrics = {
+        'loss': loss,
+        'b_loss': b_loss,
+        'c_loss': c_loss
+    }
+
+    return loss, metrics
+
 
 def motion_loss(motion_preds, errors, valid, gamma=0.8, loss_scale=1.0):
 
@@ -230,6 +293,9 @@ def train(args):
     elif args.model.lower() == 'motion':
         model_cls = MotionClassifier
         print("used MotionClassifier")
+    elif args.model.lower() == 'boundary':
+        model_cls = BoundaryClassifier
+        print("used BoundaryClassifier")
     else:
         model_cls = RAFT
         print("used RAFT")
@@ -257,14 +323,19 @@ def train(args):
 
     if args.teacher_ckpt is not None:
         selfsup = True
-        _small = args.small
-        args.small = False
-        teacher = nn.DataParallel(RAFT(args), device_ids=args.gpus)
-        did_load = teacher.load_state_dict(torch.load(args.teacher_ckpt), strict=False)
-        args.small = _small
+        # _small = args.small
+        # args.small = False
+        # teacher = nn.DataParallel(RAFT(args), device_ids=args.gpus)
+        # did_load = teacher.load_state_dict(torch.load(args.teacher_ckpt), strict=False)
+        # args.small = _small
+        teacher = load_model(
+            load_path=args.teacher_ckpt,
+            small=('small' in str(args.teacher_ckpt)),
+            cuda=True, train=False,
+            gpus=args.gpus
+        )
+
         print("TEACHER")
-        print(did_load)
-        teacher.cuda()
         teacher.eval()
         teacher.module.freeze_bn()
     elif (args.motion_ckpt is not None) or (args.features_ckpt is not None):
@@ -277,7 +348,12 @@ def train(args):
     target_net = None
     if (args.stage.lower() == 'davis') and (args.model.lower() in ['thingness', 'centroid']):
         target_net = nn.DataParallel(ForegroundMaskTarget(mask_input=True, get_connected_component=True), device_ids=args.gpus).cuda()
-    elif (args.model.lower() in ['occlusion', 'motion', 'motion_centroid', 'thingness']) and not args.supervised:
+    elif (args.model.lower() in ['occlusion',
+                                 'motion',
+                                 'motion_centroid',
+                                 'thingness',
+                                 'boundary'
+    ]) and not args.supervised:
         assert args.no_aug, "Can't use data augmentation with motion target"
         if args.diffusion_target:
             target_net = nn.DataParallel(DiffusionTarget(
@@ -286,22 +362,27 @@ def train(args):
                 num_samples=args.num_samples,
                 num_points=args.num_sample_points,
                 confidence_thresh=args.target_thresh,
-                noise_thresh=args.motion_thresh)).cuda()
+                num_iters=args.num_propagation_iters,
+                noise_thresh=args.motion_thresh,
+                energy_prior_gate=(teacher is None)
+            )).cuda()
+            print("Diffusion Target")
         else:
             target_net = nn.DataParallel(IsMovingTarget(
+                patch_radius=args.patch_radius,
                 thresh=args.motion_thresh,
+                zscore_target=args.zscore_target,
                 normalize_error=False,
                 normalize_features=False,
                 get_errors=args.use_motion_loss,
                 size=None), device_ids=args.gpus).cuda()
+            print("IsMoving Target")
 
         ## teacher just stacks the images
         selfsup = True
-        print("teacher", teacher)
-        if teacher is None:
-            def teacher(img1, img2, img0, **kwargs):
-                assert img1.dtype == img2.dtype == img0.dtype == torch.float32
-                return (None, torch.stack([img0, img1, img2], 1) / 255.0)
+        def get_video(img1, img2, img0, **kwargs):
+            assert img1.dtype == img2.dtype == img0.dtype == torch.float32
+            return (None, torch.stack([img0, img1, img2], 1) / 255.0)
 
     train_loader = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, model)
@@ -321,7 +402,11 @@ def train(args):
             if selfsup:
                 image1, image2 = [x.cuda() for x in data_blob[:2]]
                 valid = None
-                if args.model.lower() in ['motion', 'occlusion', 'thingness']:
+                if args.model.lower() in ['motion',
+                                          'occlusion',
+                                          'thingness',
+                                          'boundary'
+                ]:
                     image0 = data_blob[2].cuda()
             elif len(data_blob) == 3:
                 image1, image2, flow = [x.cuda() for x in data_blob]
@@ -337,24 +422,50 @@ def train(args):
             flow_predictions = model(image1, image2, iters=args.iters)
 
             ## get the self-supervision
-            if selfsup and args.model.lower() in ['motion', 'occlusion', 'thingness']:
-                _, flow = teacher(image1, image2, image0, iters=args.teacher_iters, test_mode=True)
+            _ds = lambda x: x
+            if args.teacher_downsample_factor > 1:
+                H,W = image1.shape[-2:]
+                stride = args.teacher_downsample_factor
+                _ds = transforms.Resize([H // stride, W // stride])
+            if selfsup and args.model.lower() in ['motion',
+                                                  'occlusion',
+                                                  'thingness',
+                                                  'boundary'
+            ]:
+                if teacher is None:
+                    _, flow = get_video(_ds(image1), _ds(image2), _ds(image0),
+                                        iters=args.teacher_iters, test_mode=True)
+                else:
+                    _, video = get_video(_ds(image1), _ds(image2), _ds(image0),
+                                        iters=args.teacher_iters, test_mode=True)
+                    _, prior = teacher(image1, image2, iters=args.teacher_iters, test_mode=True)
+                    assert prior.shape[1] == 1, prior.shape
+                    prior = prior.detach().sigmoid()
+                    if list(prior.shape[-2:]) != list(video.shape[-2:]):
+                        prior = _ds(prior)
+
+                    flow = [video, prior]
+
             elif selfsup:
-                _, flow = teacher(image1, image2, iters=args.teacher_iters, test_mode=True)
+                _, flow = teacher(_ds(image1), _ds(image2), iters=args.teacher_iters, test_mode=True)
                 # print("model", args.model, "target", flow.shape, flow.amin(), flow.amax())
 
             ## process the gt
             if target_net is not None:
-                flow = target_net(flow)
+                if not isinstance(flow, (list, tuple)):
+                    flow = [flow]
+                flow = target_net(*flow)
+                if isinstance(flow, (tuple, list)):
+                    flow = flow[1] if args.model.lower() == 'boundary' else flow[0]
                 if len(flow.shape) == 5:
                     flow = flow.squeeze(1)
-                # flow = (flow > args.motion_thresh).float()
-                # print("model", flow.shape, flow.amin(), flow.amax())
 
             if args.model.lower() in ['centroid', 'motion_centroid']:
                 loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=args.scale_centroids)
             elif args.use_motion_loss and args.model.lower() == 'motion':
                 loss, metrics = motion_loss(flow_predictions, flow, valid, args.gamma, loss_scale=args.loss_scale)
+            elif args.model.lower() == 'boundary':
+                loss, metrics = boundary_loss(flow_predictions, flow, valid, args.gamma)
             else:
                 loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma, pos_weight=args.pos_weight)
             scaler.scale(loss).backward()
@@ -438,23 +549,28 @@ def get_args(cmd=None):
     parser.add_argument('--model', type=str, default='RAFT', help='Model class')
     parser.add_argument('--supervised', action='store_true', help='whether to supervise')
     parser.add_argument('--teacher_ckpt', help='checkpoint for a pretrained RAFT. If None, use GT')
-    parser.add_argument('--teacher_iters', type=int, default=18)
+    parser.add_argument('--teacher_iters', type=int, default=24)
     parser.add_argument('--motion_ckpt', help='checkpoint for a pretrained motion model')
     parser.add_argument('--features_ckpt', help='checkpoint for a pretrained features model')
 
     # motion propagation
     parser.add_argument('--diffusion_target', action='store_true')
+    parser.add_argument('--orientation_type', default='classification')
+    parser.add_argument('--separate_boundary_models', action='store_true')
+    parser.add_argument('--zscore_target', action='store_true')
     parser.add_argument('--downsample_factor', type=int, default=1)
+    parser.add_argument('--teacher_downsample_factor', type=int, default=1)
     parser.add_argument('--patch_radius', type=int, default=0)
-    parser.add_argument('--motion_thresh', type=float, default=0.01)
+    parser.add_argument('--motion_thresh', type=float, default=None)
     parser.add_argument('--target_thresh', type=float, default=0.75)
     parser.add_argument('--positive_thresh', type=float, default=0.4)
     parser.add_argument('--negative_thresh', type=float, default=0.1)
     parser.add_argument('--affinity_radius', type=int, default=1)
     parser.add_argument('--affinity_radius_inference', type=int, default=1)
     parser.add_argument('--static_affinities', action='store_true')
+    parser.add_argument('--static_input', action='store_true')
     parser.add_argument('--affinity_nonlinearity', type=str, default='softmax')
-    parser.add_argument('--num_propagation_iters', type=int, default=50)
+    parser.add_argument('--num_propagation_iters', type=int, default=200)
     parser.add_argument('--num_samples', type=int, default=8)
     parser.add_argument('--num_sample_points', type=int, default=2**14)
     parser.add_argument('--predict_every', type=int, default=5)
@@ -498,6 +614,8 @@ def load_model(load_path,
             cls = MotionClassifier
         elif 'prop' in name:
             cls = MotionPropagator
+        elif 'boundary' in name:
+            cls = BoundaryClassifier
         else:
             raise ValueError("Couldn't identify a model class associated with %s" % name)
         return cls
@@ -533,7 +651,10 @@ def load_motion_teacher(args):
     ## get a path for the motion classifier
     motion_path = args.motion_ckpt
     if motion_path is not None:
-        motion_model = load_model(motion_path, small=True, cuda=True, train=False)
+        motion_model = load_model(motion_path,
+                                  small=True,
+                                  cuda=True, train=False
+        )
     else:
         motion_model = None
 

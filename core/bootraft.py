@@ -113,8 +113,8 @@ ForegroundMaskTarget = partial(targets.MotionForegroundTarget, resolution=8, num
 IsMovingTarget = partial(targets.IsMovingTarget, warp_radius=3)
 DiffusionTarget = partial(fprop.DiffusionTarget,
                           warp_radius=3,
-                          boundary_radius=5,
-                          num_iters=200)
+                          boundary_radius=5)
+
 
 class KpPrior(nn.Module):
     def __init__(self,
