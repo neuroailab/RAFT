@@ -59,7 +59,7 @@ VAL_FREQ = 5000
 # datasets without supervision
 SELFSUP_DATASETS = ['robonet', 'dsr']
 
-def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_flow=0.5, pos_weight=1.0):
+def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_flow=0.5, pos_weight=1.0, pixel_thresh=None):
     """ Loss function defined over sequence of flow predictions """
 
     n_predictions = len(flow_preds)
@@ -82,6 +82,7 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
 
     if flow_preds[-1].shape[-3] == 1:
         flow_gt = (mag[:,None] > min_flow).float()
+
         pos_weight = torch.tensor([pos_weight], device=flow_gt.device)
         loss_cls = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='none')
         loss_fn = lambda logits, labels: loss_cls(_ds(logits), labels)
@@ -92,10 +93,17 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
     # print("num foreground px", flow_gt[0].sum())
     # print("total pixels", np.prod(flow_gt.shape[-2:]))
 
+    if pixel_thresh is not None:
+        print("pos px", flow_gt.sum((1,2,3)))
+        gt_weight = (flow_gt.sum((1,2,3), True) > pixel_thresh).float()
+        print("gt weight", gt_weight[:,0,0,0])
+    else:
+        gt_weight = 1.0
+
+
     for i in range(n_predictions):
         i_weight = gamma**(n_predictions - i - 1)
-
-        i_loss = loss_fn(flow_preds[i], flow_gt)
+        i_loss = loss_fn(flow_preds[i], flow_gt) * gt_weight
         flow_loss += i_weight * (valid[:, None] * i_loss).mean()
 
     # epe = torch.sum((flow_preds[-1] - flow_gt)**2, dim=1).sqrt()
@@ -117,6 +125,7 @@ def boundary_loss(boundary_preds,
                   gamma=0.8,
                   boundary_scale=1.0,
                   orientation_scale=1.0,
+                  pixel_thresh=None,
                   **kwargs):
 
     n_predictions = len(boundary_preds)
@@ -125,6 +134,13 @@ def boundary_loss(boundary_preds,
     # break up boundary_target
     b_target, c_target, c_target_discrete = boundary_target.split([1,2,8], 1)
     num_px = b_target.sum(dim=(-3,-2,-1)).clamp(min=1.)
+
+    if pixel_thresh is not None:
+        print("pos px", b_target.sum((1,2,3)))
+        gt_weight = (b_target.sum((1,2,3), True) > pixel_thresh).float()
+        print("gt weight", gt_weight[:,0,0,0])
+    else:
+        gt_weight = 1.0
 
     def _split_preds(x):
         dim = x.shape[-3]
@@ -150,8 +166,8 @@ def boundary_loss(boundary_preds,
     for i in range(n_predictions):
         i_weight = gamma ** (n_predictions - i - 1)
         b_pred, c_pred = _split_preds(_ds(boundary_preds[i]))
-        i_b_loss = b_loss_fn(b_pred, b_target).mean()
-        i_c_loss = (c_loss_fn(c_pred, c_target)[:,None] * b_target).sum((-3,-2,-1))
+        i_b_loss = (b_loss_fn(b_pred, b_target) * gt_weight).mean()
+        i_c_loss = (c_loss_fn(c_pred, c_target)[:,None] * b_target * gt_weight).sum((-3,-2,-1))
         i_c_loss = (i_c_loss / num_px).mean()
 
         b_loss += i_b_loss * i_weight
@@ -460,14 +476,22 @@ def train(args):
                 if len(flow.shape) == 5:
                     flow = flow.squeeze(1)
 
+                # # save a tensor
+                # PATH = 'checkpoints/dtarget_%s.pth' % args.name
+                # torch.save({
+                #     'prior': prior,
+                #     'video': video,
+                #     'target': flow
+                # }, PATH)
+
             if args.model.lower() in ['centroid', 'motion_centroid']:
-                loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=args.scale_centroids)
+                loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=args.scale_centroids, pixel_thresh=args.pixel_thresh)
             elif args.use_motion_loss and args.model.lower() == 'motion':
                 loss, metrics = motion_loss(flow_predictions, flow, valid, args.gamma, loss_scale=args.loss_scale)
             elif args.model.lower() == 'boundary':
-                loss, metrics = boundary_loss(flow_predictions, flow, valid, args.gamma)
+                loss, metrics = boundary_loss(flow_predictions, flow, valid, args.gamma, pixel_thresh=args.pixel_thresh)
             else:
-                loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma, pos_weight=args.pos_weight)
+                loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma, pos_weight=args.pos_weight, pixel_thresh=args.pixel_thresh)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
@@ -563,6 +587,7 @@ def get_args(cmd=None):
     parser.add_argument('--patch_radius', type=int, default=0)
     parser.add_argument('--motion_thresh', type=float, default=None)
     parser.add_argument('--target_thresh', type=float, default=0.75)
+    parser.add_argument('--pixel_thresh', type=int, default=None)
     parser.add_argument('--positive_thresh', type=float, default=0.4)
     parser.add_argument('--negative_thresh', type=float, default=0.1)
     parser.add_argument('--affinity_radius', type=int, default=1)
