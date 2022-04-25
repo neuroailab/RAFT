@@ -1,5 +1,7 @@
 #!/bin/bash
 mkdir -p checkpoints
+# 4.25.22 MOVI-E
+python -u train.py --name boundaryMotionReg-rnd0-movie-bs2-large-dtarg-nthr01-cthr075-pr1 --stage movi_e --validation z --gpus 0 --num_steps 100000 --batch_size 2 --lr 0.0004 --image_size 256 256 --wdecay 0.0001 --model boundary --orientation_type regression --no_aug --diffusion_target --downsample_factor 1 --teacher_downsample_factor 1 --motion_thresh 0.1 --target_thresh 0.75 --num_samples 8 --patch_radius 1 --val_freq 2500
 # 4.16.22
 # python -u train.py --name boundaryStaticReg-rnd0-tdw-bs4-small-dtarg-nthr0-cthr05-pr1-tds2-fullplayall --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model boundary --no_aug --max_frame 0 --small --diffusion_target --downsample_factor 1 --teacher_downsample_factor 2 --motion_thresh 0.0 --target_thresh 0.5 --num_samples 8 --patch_radius 1 --static_input --orientation_type regression --full_playroom --filepattern *[0-8]
 # python -u train.py --name boundaryStaticReg-rnd0-tdw-bs4-small-dtarg-nthr0-cthr075-pr1-tds2-fullplayall --stage tdw --validation z --gpus 0 1 --num_steps 100000 --batch_size 4 --lr 0.0004 --image_size 496 496 --wdecay 0.0001 --model boundary --no_aug --max_frame 0 --small --diffusion_target --downsample_factor 1 --teacher_downsample_factor 2 --motion_thresh 0.0 --target_thresh 0.75 --num_samples 8 --patch_radius 1 --static_input --orientation_type regression --full_playroom --filepattern *[0-8]

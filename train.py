@@ -326,7 +326,7 @@ def train(args):
     model.cuda()
     model.train()
 
-    if args.stage not in ['chairs', 'tdw', 'robonet', 'davis']:
+    if args.stage in ['sintel']:
         model.module.freeze_bn()
 
     ## load a teacher model
@@ -400,7 +400,7 @@ def train(args):
             assert img1.dtype == img2.dtype == img0.dtype == torch.float32
             return (None, torch.stack([img0, img1, img2], 1) / 255.0)
 
-    train_loader = datasets.fetch_dataloader(args)
+    train_loader, epoch_size = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, model)
 
     total_steps = 0
@@ -413,6 +413,8 @@ def train(args):
     should_keep_training = True
     while should_keep_training:
 
+        # for i_batch in range(epoch_size):
+        #     data_blob = train_loader.next()
         for i_batch, data_blob in enumerate(train_loader):
             optimizer.zero_grad()
             if selfsup:
@@ -424,11 +426,17 @@ def train(args):
                                           'boundary'
                 ]:
                     image0 = data_blob[2].cuda()
+
+                # print("data")
+                # for v in [image1, image2, image0]:
+                #     print(v.shape, v.dtype, v.amin(), v.amax())
+
             elif len(data_blob) == 3:
                 image1, image2, flow = [x.cuda() for x in data_blob]
                 valid = None
             else:
                 image1, image2, flow, valid = [x.cuda() for x in data_blob]
+
 
             if args.add_noise:
                 stdv = np.random.uniform(0.0, 5.0)
@@ -472,7 +480,10 @@ def train(args):
                     flow = [flow]
                 flow = target_net(*flow)
                 if isinstance(flow, (tuple, list)):
-                    flow = flow[1] if args.model.lower() == 'boundary' else flow[0]
+                    if 'combined' in args.orientation_type:
+                        flow = torch.cat([flow[0], flow[1]], 1)
+                    else:
+                        flow = flow[1] if args.model.lower() == 'boundary' else flow[0]
                 if len(flow.shape) == 5:
                     flow = flow.squeeze(1)
 
@@ -489,7 +500,19 @@ def train(args):
             elif args.use_motion_loss and args.model.lower() == 'motion':
                 loss, metrics = motion_loss(flow_predictions, flow, valid, args.gamma, loss_scale=args.loss_scale)
             elif args.model.lower() == 'boundary':
-                loss, metrics = boundary_loss(flow_predictions, flow, valid, args.gamma, pixel_thresh=args.pixel_thresh)
+                if args.orientation_type == 'combined':
+                    loss, metrics = boundary_loss(
+                        [f[:,1:] for f in flow_predictions], flow[:,1:],
+                        valid, args.gamma, pixel_thresh=args.pixel_thresh)
+                    loss_m, metrics_m = sequence_loss(
+                        [f[:,:1] for f in flow_predictions], flow[:,:1],
+                        valid, args.gamma, pos_weight=args.pos_weight,
+                        pixel_thresh=args.pixel_thresh)
+                    loss = loss + loss_m
+                    metrics['motion_loss'] = metrics_m['loss']
+                    metrics['loss'] += metrics_m['loss']
+                else:
+                    loss, metrics = boundary_loss(flow_predictions, flow, valid, args.gamma, pixel_thresh=args.pixel_thresh)
             else:
                 loss, metrics = sequence_loss(flow_predictions, flow, valid, args.gamma, pos_weight=args.pos_weight, pixel_thresh=args.pixel_thresh)
             scaler.scale(loss).backward()
@@ -518,7 +541,7 @@ def train(args):
                 logger.write_dict(results)
 
                 model.train()
-                if args.stage not in ['chairs', 'tdw', 'robonet', 'davis']:
+                if args.stage in ['sintel']:
                     model.module.freeze_bn()
 
             total_steps += 1

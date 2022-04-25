@@ -168,7 +168,14 @@ class BoundaryClassifier(RAFT):
 
     def __init__(self, args):
         super().__init__(args)
-        out_dim = 3 if self.args.orientation_type == 'regression' else 9
+        out_type = self.args.orientation_type
+        if out_type == 'regression':
+            out_dim = 3
+        elif out_type == 'classification':
+            out_dim = 9
+        elif out_type == 'combined':
+            out_dim = 4
+
         self.classifier_head = FlowHead(
             input_dim=self.hidden_dim, out_dim=out_dim)
         self.static_input = self.args.static_input

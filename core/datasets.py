@@ -27,6 +27,7 @@ from dorsalventral.data.robonet import (RobonetDataset,
                                         get_robot_names)
 from dorsalventral.data.davis import (DavisDataset,
                                       get_dataset_names)
+from dorsalventral.data.movi import MoviDataset
 from dorsalventral.data.utils import ToTensor, RgbToIntSegments
 
 import kornia.color
@@ -316,10 +317,10 @@ class TdwFlowDataset(FlowDataset):
 
         self.get_gt_flow = get_gt_flow or (not self.is_test)
         self.get_gt_segments = get_gt_segments
-        if self.get_gt_segments:
-            self.transform_segments = transforms.Compose([
-                ToTensor(), RgbToIntSegments()])
 
+    def transform_segments(self, x):
+        return transforms.Compose([
+            ToTensor(), RgbToIntSegments()])(x)
 
     def __len__(self):
         return len(self.train_files if not self.is_test else self.test_files)
@@ -505,7 +506,9 @@ class TdwFlowDataset(FlowDataset):
         if self.is_test and (img0 is None):
             return (torch.from_numpy(img1).permute(2, 0, 1).float(),
                     torch.from_numpy(img2).permute(2, 0, 1).float(),
-                    torch.from_numpy(flow).permute(2, 0, 1).float() if self.get_gt_flow else {})
+                    torch.from_numpy(flow).permute(2, 0, 1).float() if self.get_gt_flow else {},
+                    segments
+            )
 
 
 
@@ -863,6 +866,40 @@ class TdwAffinityDataset(torch.utils.data.Dataset):
 
         return raw_segment_map, segment_map, gt_moving
 
+class MoviFlowDataset(MoviDataset):
+
+    def __init__(self,
+                 root,
+                 split='train',
+                 sequence_length=3,
+                 passes=["images", "objects", "flow"],
+                 *args, **kwargs):
+        super().__init__(dataset_dir=root,
+                         split=split,
+                         sequence_length=sequence_length,
+                         passes=passes,
+                         *args, **kwargs)
+
+        self.is_test = ('train' not in self.split)
+        if self.is_test and 'flow' not in self.passes:
+            self.passes.append('flow')
+
+    def __getitem__(self, idx):
+        data = super().__getitem__(idx)
+        video = data['images'].float()
+        img1, img2 = video[-2], video[-1] # index and forward frames
+        img0 = None
+        if video.shape[0] == 3:
+            img0 = video[0]
+        elif self.is_test:
+            minv, maxv = self.meta['forward_flow_range']
+            img0 = data['flow'][-2] / 65535 * (maxv - minv) + minv
+
+        segments = data.get('objects', None)
+        if segments is not None:
+            segments = segments[-2] # index frame
+
+        return (img1, img2, img0, segments)
 
 class RobonetFlowDataset(RobonetDataset):
 
@@ -965,7 +1002,26 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             get_backward_frame=((args.model in ['motion','occlusion', 'thingness', 'boundary']) and not args.supervised)
         )
 
-    if args.stage == 'robonet':
+    elif 'movi' in args.stage:
+        root = os.path.join(
+            '/mnt/fs6/honglinc/dataset/tensorflow_datasets/',
+            args.stage,
+            '256x256' if args.image_size[0] > 128 else '128x128',
+            '1.0.0'
+        )
+        train_dataset = MoviFlowDataset(
+            root=root,
+            split='train',
+            sequence_length=(3 if args.model in ['motion', 'boundary', 'affinity'] else 2),
+            delta_time=args.flow_gap,
+            passes=['images', 'objects'],
+            min_start_frame=0,
+            max_start_frame=None
+        )
+
+        print("training on %s with %d movies" % (args.stage, len(train_dataset.ds)))
+
+    elif args.stage == 'robonet':
         print("dataset names", args.dataset_names)
         train_dataset = RobonetFlowDataset(
             root=ROBONET_DIR,
@@ -977,7 +1033,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             filter_imsize=args.image_size
         )
 
-    if args.stage == 'davis':
+    elif args.stage == 'davis':
         print("dataset names", args.dataset_names)
         train_dataset = DavisFlowDataset(
             root='/data5/dbear/DAVIS2016',
@@ -988,7 +1044,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             get_gt_flow=True,
             flow_gap=args.flow_gap)
 
-    if args.stage == 'chairs':
+    elif args.stage == 'chairs':
         if args.no_aug:
             aug_params = None
         else:
@@ -1019,10 +1075,36 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         aug_params = {'crop_size': args.image_size, 'min_scale': -0.2, 'max_scale': 0.4, 'do_flip': False}
         train_dataset = KITTI(aug_params, split='training')
 
-    print(train_dataset)
-    print(len(train_dataset))
-    train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size,
-        pin_memory=False, shuffle=True, num_workers=4, drop_last=True)
+    # train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size,
+    #     pin_memory=False, shuffle=True, num_workers=4, drop_last=True)
+    train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
 
-    print('Training with %d image pairs' % len(train_dataset))
-    return train_loader
+
+
+    num_examples = len(train_dataset)
+
+    print('Training with %d image pairs' % num_examples)
+    return (train_loader, num_examples)
+
+if __name__ == '__main__':
+    root = os.path.join(
+        '/mnt/fs6/honglinc/dataset/tensorflow_datasets/',
+        'movi_e',
+        '256x256',
+        '1.0.0'
+    )
+    train_dataset = MoviFlowDataset(
+        root=root,
+        split='test',
+        sequence_length=3,
+        delta_time=1,
+        passes=['images', 'objects', 'flow'],
+        min_start_frame=0,
+        max_start_frame=24
+    )
+    train_loader = iter(data.DataLoader(train_dataset, batch_size=1, shuffle=False))
+    for i in range(5):
+        data = train_loader.next()
+        for v in data:
+            if v is not None:
+                print(v.dtype, v.shape, v.amin().item(), v.amax().item())
