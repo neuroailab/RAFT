@@ -29,8 +29,12 @@ DiffusionTarget = partial(fprop.DiffusionTarget,
 
 def get_args(cmd=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--motion_path', type=str)
-    parser.add_argument('--boundary_path', type=str)
+    parser.add_argument(
+        '--motion_path', type=str,
+        default='../checkpoints/15000_motion-rnd0-tdw-bs4-large-dtarg-nthr0-cthr025-pr1-tds2-fullplayall-ctd.pth')
+    parser.add_argument(
+        '--boundary_path', type=str,
+        default='../checkpoints/40000_boundaryStaticReg-rnd0-tdw-bs4-large-dtarg-nthr0-cthr075-pr1-tds2-fullplayall.pth')
     parser.add_argument('--corr_levels', type=int, default=4)
     parser.add_argument('--corr_radius', type=int, default=4)
     parser.add_argument('--dropout', type=float, default=0.0)
