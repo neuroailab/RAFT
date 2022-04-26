@@ -881,8 +881,6 @@ class MoviFlowDataset(MoviDataset):
                          *args, **kwargs)
 
         self.is_test = ('train' not in self.split)
-        if self.is_test and 'flow' not in self.passes:
-            self.passes.append('flow')
 
     def __getitem__(self, idx):
         data = super().__getitem__(idx)
@@ -891,7 +889,7 @@ class MoviFlowDataset(MoviDataset):
         img0 = None
         if video.shape[0] == 3:
             img0 = video[0]
-        elif self.is_test:
+        elif self.is_test and (img0 is None):
             minv, maxv = self.meta['forward_flow_range']
             img0 = data['flow'][-2] / 65535 * (maxv - minv) + minv
 
@@ -1011,10 +1009,10 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         )
         train_dataset = MoviFlowDataset(
             root=root,
-            split='train',
+            split=args.split,
             sequence_length=(3 if args.model in ['motion', 'boundary', 'affinity'] else 2),
             delta_time=args.flow_gap,
-            passes=['images', 'objects'],
+            passes=['images', 'objects', 'flow'],
             min_start_frame=0,
             max_start_frame=None
         )
@@ -1075,11 +1073,11 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         aug_params = {'crop_size': args.image_size, 'min_scale': -0.2, 'max_scale': 0.4, 'do_flip': False}
         train_dataset = KITTI(aug_params, split='training')
 
-    # train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size,
-    #     pin_memory=False, shuffle=True, num_workers=4, drop_last=True)
-    train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-
-
+    if 'movi' not in args.stage:
+        train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size,
+            pin_memory=False, shuffle=True, num_workers=4, drop_last=True)
+    elif 'movi' in args.stage:
+        train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
 
     num_examples = len(train_dataset)
 

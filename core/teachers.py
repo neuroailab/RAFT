@@ -109,6 +109,7 @@ class MotionToStaticTeacher(nn.Module):
     def __init__(self,
                  downsample_factor=4,
                  target_from_motion=False,
+                 return_intermediates=False,
                  motion_path=None,
                  motion_model_params={},
                  boundary_path=None,
@@ -118,6 +119,7 @@ class MotionToStaticTeacher(nn.Module):
         super().__init__()
         self.downsample_factor = downsample_factor
         self.target_from_motion = target_from_motion
+        self.return_intermediates = return_intermediates
 
         self.motion_model = self._load_motion_model(
             motion_path,
@@ -189,7 +191,16 @@ class MotionToStaticTeacher(nn.Module):
             orientations=orientations,
             adj=adj
         )
-        return target
+        if not self.return_intermediates:
+            return target
+        return {
+            'motion': motion,
+            'boundaries': boundaries,
+            'orientations': orientations,
+            'motion_upsample_mask': m_ups_mask,
+            'boundary_upsample_mask': b_ups_mask,
+            'target': target
+        }
 
 class KpPrior(nn.Module):
     def __init__(self,
@@ -325,7 +336,8 @@ if __name__ == '__main__':
     ), device_ids=args.gpus)
     target_net.eval()
 
-    img1 = torch.rand((1,3,256,256))
-    img2 = torch.rand((1,3,256,256))
-    target = target_net(img1.cuda(), img2.cuda())
-    print(target.shape, target.dtype, torch.unique(target))
+    for i in range(100):
+        img1 = torch.rand((1,3,512,512))
+        img2 = torch.rand((1,3,512,512))
+        target = target_net(img1.cuda(), img2.cuda())
+        print(target.shape, target.dtype, torch.unique(target))

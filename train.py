@@ -258,7 +258,8 @@ class Logger:
 
     def _print_training_status(self):
         metrics_data = [self.running_loss[k]/SUM_FREQ for k in sorted(self.running_loss.keys())]
-        training_str = "[{:6d}, {:10.7f}] ".format(self.total_steps+1, self.scheduler.get_last_lr()[0])
+        training_str = "[{:6d}, {:6d}, {:6d}, {:10.7f}] ".format(
+            self.total_steps+1, self.epoch, self.step+1, self.scheduler.get_last_lr()[0])
         metrics_str = ("{:10.4f}, "*len(metrics_data)).format(*metrics_data)
 
         # print the training status
@@ -271,7 +272,9 @@ class Logger:
             self.writer.add_scalar(k, self.running_loss[k]/SUM_FREQ, self.total_steps)
             self.running_loss[k] = 0.0
 
-    def push(self, metrics):
+    def push(self, epoch, step, metrics):
+        self.epoch = epoch
+        self.step = step
         self.total_steps += 1
 
         for key in metrics:
@@ -411,11 +414,15 @@ def train(args):
     add_noise = True
 
     should_keep_training = True
+    epoch = 0
     while should_keep_training:
-
-        # for i_batch in range(epoch_size):
-        #     data_blob = train_loader.next()
-        for i_batch, data_blob in enumerate(train_loader):
+        epoch += 1
+        for i_batch in range(epoch_size // args.batch_size):
+            try:
+                data_blob = iter(train_loader).next()
+            except StopIteration:
+                train_loader.dataset.reset_iterator()
+                data_blob = iter(train_loader).next()
             optimizer.zero_grad()
             if selfsup:
                 image1, image2 = [x.cuda() for x in data_blob[:2]]
@@ -426,10 +433,6 @@ def train(args):
                                           'boundary'
                 ]:
                     image0 = data_blob[2].cuda()
-
-                # print("data")
-                # for v in [image1, image2, image0]:
-                #     print(v.shape, v.dtype, v.amin(), v.amax())
 
             elif len(data_blob) == 3:
                 image1, image2, flow = [x.cuda() for x in data_blob]
@@ -523,7 +526,7 @@ def train(args):
             scheduler.step()
             scaler.update()
 
-            logger.push(metrics)
+            logger.push(epoch, i_batch + 1, metrics)
 
             if total_steps % VAL_FREQ == VAL_FREQ - 1:
                 PATH = 'checkpoints/%d_%s.pth' % (total_steps+1, args.name)
@@ -560,6 +563,7 @@ def get_args(cmd=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', default='raft', help="name your experiment")
     parser.add_argument('--stage', default="chairs", help="determines which dataset to use for training")
+    parser.add_argument('--split', type=str, default='train')
     parser.add_argument('--dataset_names', type=str, nargs='+')
     parser.add_argument('--train_split', type=str, default='all')
     parser.add_argument('--flow_gap', type=int, default=1)
