@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from scipy import interpolate
-
+from torch_sparse import SparseTensor
 
 class InputPadder:
     """ Pads images such that dimensions are divisible by 8 """
@@ -80,3 +80,113 @@ def coords_grid(batch, ht, wd, device):
 def upflow8(flow, mode='bilinear'):
     new_size = (8 * flow.shape[2], 8 * flow.shape[3])
     return  8 * F.interpolate(flow, size=new_size, mode=mode, align_corners=True)
+
+
+def gather_tensor(tensor, sample_inds, invalid=0.):
+    # tensor is of shape [B, N, D]
+    # sample_inds is of shape [2, B, T, K] or [3, B, T, K]
+    # where the last column of the 1st dimension are the sample indices
+
+    _, N, D = tensor.shape
+    dim, B, T, K = sample_inds.shape
+
+
+    if dim == 2:
+        if sample_inds[-1].max() == N:
+            # special case: indices where idx == N is assigned zero
+            tensor = torch.cat([tensor, invalid * torch.ones([B, 1, D], device=tensor.device)], dim=1)
+
+        indices = sample_inds[-1].view(B, T * K).unsqueeze(-1).expand(-1, -1, D)
+        output = torch.gather(tensor, 1, indices).view([B, T, K, D])
+    elif dim == 3:
+        if sample_inds[-1].max() == D:
+            # special case: indices where idx == N is assigned zero
+            tensor = torch.cat([tensor, invalid * torch.ones([B, N, 1], device=tensor.device)], dim=2)
+            D = D + 1
+        elif sample_inds[1].max() == N:
+            # special case: indices where idx == N is assigned zero
+            tensor = torch.cat([tensor, invalid * torch.ones([B, 1, D], device=tensor.device)], dim=1)
+            N = N + 1
+
+        tensor = tensor.view(B, N * D)
+        node_indices = sample_inds[1].view(B, T * K)
+        sample_indices = sample_inds[2].view(B, T * K)
+        indices = node_indices * D + sample_indices
+        # print('in gather tensor: ', indices.max(), tensor.shape)
+        output = torch.gather(tensor, 1, indices).view([B, T, K])
+    else:
+        raise ValueError
+    return output
+
+def softmax_max_norm(x):
+    x = x.softmax(-1)
+    x = x / torch.max(x, dim=-1, keepdim=True)[0].clamp(min=1e-12)# .detach()
+    return x
+
+def weighted_softmax(x, weight):
+    maxes = torch.max(x, -1, keepdim=True)[0]
+    x_exp = torch.exp(x - maxes)
+    x_exp_sum = (torch.sum(x_exp * weight, -1, keepdim=True) + 1e-12)
+    return (x_exp / x_exp_sum) * weight
+
+def reorder_int_labels(x):
+    _, y = torch.unique(x, return_inverse=True)
+    y -= y.min()
+    return y
+
+
+def generate_local_indices(img_size, K, padding='reflection'):
+    H, W = img_size
+    indice_maps = torch.arange(H * W).reshape([1, 1, H, W]).float()
+
+    # symmetric padding
+    assert K % 2 == 1  # assert K is odd
+    half_K = int((K - 1) / 2)
+
+    assert padding in ['reflection', 'constant'], "unsupported padding mode"
+    if padding == 'reflection':
+        pad_fn = torch.nn.ReflectionPad2d(half_K)
+    else:
+        pad_fn = torch.nn.ConstantPad2d(half_K, H * W)
+
+    indice_maps = pad_fn(indice_maps)
+    local_inds = F.unfold(indice_maps, kernel_size=K, stride=1)  # [B, C * K * k, H, W]
+    local_inds = local_inds.permute(0, 2, 1)
+    return local_inds
+
+
+def local_to_sparse_global_affinity(local_adj, sample_inds, activated=None, sparse_transpose=False):
+    """
+    Convert local adjacency matrix of shape [B, N, K] to [B, N, N]
+    :param local_adj: [B, N, K]
+    :param size: [H, W], with H * W = N
+    :return: global_adj [B, N, N]
+    """
+
+    B, N, K = list(local_adj.shape)
+
+    assert sample_inds.shape[0] == 3
+    local_node_inds = sample_inds[2] # [B, N, K]
+
+    batch_inds = torch.arange(B).reshape([B, 1]).to(local_node_inds)
+    node_inds = torch.arange(N).reshape([1, N]).to(local_node_inds)
+    row_inds = (batch_inds * N + node_inds).reshape(B * N, 1).expand(-1, K).flatten()  # [BNK]
+
+    col_inds = local_node_inds.flatten()  # [BNK]
+    valid = col_inds < N
+
+    col_offset = (batch_inds * N).reshape(B, 1, 1).expand(-1, N, -1).expand(-1, -1, K).flatten() # [BNK]
+    col_inds += col_offset
+    value = local_adj.flatten()
+
+    if activated is not None:
+        activated = activated.reshape(B, N, 1).expand(-1, -1, K).bool()
+        valid = torch.logical_and(valid, activated.flatten())
+
+    if sparse_transpose:
+        global_adj = SparseTensor(row=col_inds[valid], col=row_inds[valid],
+                                  value=value[valid], sparse_sizes=[B*N, B*N])
+    else:
+        raise ValueError('Current KP implementation assumes tranposed affinities')
+
+    return global_adj

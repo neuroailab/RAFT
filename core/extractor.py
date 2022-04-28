@@ -4,11 +4,12 @@ import torch.nn.functional as F
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_planes, planes, norm_fn='group', stride=1):
+    def __init__(self, in_planes, planes, norm_fn='group', kernel_size=3, stride=1, residual=True):
         super(ResidualBlock, self).__init__()
-  
-        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, padding=1, stride=stride)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, padding=1)
+
+        padding = 1 if kernel_size == 3 else 0
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=kernel_size, padding=padding, stride=stride)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=kernel_size, padding=padding)
         self.relu = nn.ReLU(inplace=True)
 
         num_groups = planes // 8
@@ -44,11 +45,16 @@ class ResidualBlock(nn.Module):
             self.downsample = nn.Sequential(
                 nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride), self.norm3)
 
+        self.residual = residual
 
     def forward(self, x):
+
         y = x
         y = self.relu(self.norm1(self.conv1(y)))
         y = self.relu(self.norm2(self.conv2(y)))
+
+        if not self.residual:
+            return y
 
         if self.downsample is not None:
             x = self.downsample(x)
@@ -265,3 +271,33 @@ class SmallEncoder(nn.Module):
             x = torch.split(x, [batch_dim, batch_dim], dim=0)
 
         return x
+
+class KeyQueryExtractor(nn.Module):
+    def __init__(self, input_dim, kq_dim, latent_dim, kernel_size=1, norm_fn='batch'):
+        super(KeyQueryExtractor, self).__init__()
+        self.conv = nn.Conv2d(input_dim, kq_dim, kernel_size=kernel_size, bias=True)
+        self.key = nn.Sequential(
+            ResidualBlock(kq_dim, latent_dim, norm_fn, kernel_size=kernel_size, stride=1, residual=False),
+            nn.Conv2d(latent_dim, kq_dim, kernel_size=kernel_size, bias=True, padding='same'))
+        self.query = nn.Sequential(
+            ResidualBlock(kq_dim, latent_dim, norm_fn, kernel_size=kernel_size, stride=1, residual=False),
+            nn.Conv2d(latent_dim, kq_dim, kernel_size=kernel_size, bias=True, padding='same'))
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.InstanceNorm2d, nn.GroupNorm)):
+                if m.weight is not None:
+                    nn.init.constant_(m.weight, 1)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        # feature projection
+        feats = self.conv(x)  # [B, C, H, W]
+
+        # key & query projection
+        keys = self.key(feats)  # [B, C, H, W]
+        queries = self.query(feats)  # [B, C, H, W]
+
+        return keys, queries
