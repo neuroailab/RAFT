@@ -416,6 +416,7 @@ def train(args):
             boundary_path=args.boundary_ckpt,
             parse_paths=True
         ), device_ids=args.gpus).cuda()
+        target_net.eval()
         print("FuturePredictionTarget")
         selfsup = True
         def get_video(img1, img2, img0, **kwargs):

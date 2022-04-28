@@ -79,6 +79,8 @@ def load_model(load_path,
             cls = MotionClassifier
         elif 'boundary' in name:
             cls = BoundaryClassifier
+        elif 'flow' in name:
+            cls = RAFT
         else:
             raise ValueError("Couldn't identify a model class associated with %s" % name)
         return cls
@@ -124,18 +126,25 @@ class MotionToStaticTeacher(nn.Module):
     }
     def __init__(self,
                  downsample_factor=4,
+                 motion_resolution=4,
+                 motion_beta=10.0,
                  target_from_motion=False,
                  return_intermediates=False,
                  motion_path=None,
                  motion_model_params={},
                  boundary_path=None,
                  boundary_model_params={},
+                 flow_path=None,
+                 flow_model_params={},
                  target_model_params=DEFAULT_TARGET_PARAMS,
+                 parse_paths=True,
                  **kwargs):
         super().__init__()
         self.downsample_factor = downsample_factor
+        self.motion_resolution, self.motion_beta = motion_resolution, motion_beta
         self.target_from_motion = target_from_motion
         self.return_intermediates = return_intermediates
+        self.parse_paths = parse_paths
 
         self.motion_model = self._load_motion_model(
             motion_path,
@@ -143,13 +152,27 @@ class MotionToStaticTeacher(nn.Module):
         self.boundary_model = self._load_boundary_model(
             boundary_path,
             copy.deepcopy(boundary_model_params))
+        self.flow_model = self._load_flow_model(
+            flow_path,
+            copy.deepcopy(flow_model_params))
         self.target_model = self._build_target_model(
             copy.deepcopy(target_model_params))
 
     def _load_motion_model(self, path, params):
-        return load_model(path, 'motion', **params)
+        return load_model(path,
+                          model_class='motion',
+                          parse_path=self.parse_paths,
+                          **params) if path else None
     def _load_boundary_model(self, path, params):
-        return load_model(path, 'boundary', **params)
+        return load_model(path,
+                          model_class='boundary',
+                          parse_path=self.parse_paths,
+                          **params) if path else None
+    def _load_flow_model(self, path, params):
+        return load_model(path,
+                          model_class='flow',
+                          parse_path=self.parse_paths,
+                          **params) if path else None
     def _build_target_model(self, params):
         return fprop.MotionSegmentTarget(
             downsample_factor=self.downsample_factor,
@@ -192,6 +215,31 @@ class MotionToStaticTeacher(nn.Module):
         bound_preds = (nonlinearity or nn.Identity())(bound_preds)
         return (bound_preds, orientation_preds, motion_preds, ups_mask)
 
+    @staticmethod
+    def get_flow_preds(net, img1, img2, iters=12, backward=False,
+                       resolution=None, beta=10.0, thresh=0.5):
+        if net is None:
+            return (None, None)
+
+        if backward:
+            ups_mask, flow_preds = net(img2, img1, test_mode=True, iters=iters)
+        else:
+            ups_mask, flow_preds = net(img1, img2, test_mode=True, iters=iters)
+
+        if resolution is not None:
+            flow_preds = targets.OpticalFlowTarget.delta_hw_to_discrete_flow(
+                flow_preds, resolution=resolution, from_xy=False, z_score=False)
+        else:
+            flow_mask = (flow_preds.square().sum(1, True).sqrt() > thresh).float()
+            flow_preds = fprop.spatial_moments_to_circular_target(flow_preds, beta)
+            static = torch.cat([
+                torch.zeros_like(flow_preds[:,:4]),
+                torch.ones_like(flow_preds[:,4:5]),
+                torch.zeros_like(flow_preds[:,5:])], 1)
+            flow_preds = flow_preds * flow_mask + static * (1 - flow_mask)
+
+        return (flow_preds, ups_mask)
+
     def forward(self, img1, img2, adj=None, *args, **kwargs):
 
         motion, m_ups_mask = self.get_motion_preds(
@@ -200,6 +248,9 @@ class MotionToStaticTeacher(nn.Module):
         boundaries, orientations, _motion, b_ups_mask = self.get_boundary_preds(
             self.boundary_model, img1, img2, iters=kwargs.get('boundary_iters', 12)
         )
+        flow, f_ups_mask = self.get_flow_preds(
+            self.flow_model, img1, img2, iters=kwargs.get('flow_iters', 12),
+            resolution=self.motion_resolution, beta=self.motion_beta)
         target = self.target_model(
             video=torch.stack([img1, img2], 1) * 255.0,
             motion=motion,
@@ -213,8 +264,10 @@ class MotionToStaticTeacher(nn.Module):
             'motion': motion,
             'boundaries': boundaries,
             'orientations': orientations,
+            'flow': flow,
             'motion_upsample_mask': m_ups_mask,
             'boundary_upsample_mask': b_ups_mask,
+            'flow_upsample_mask': f_ups_mask,
             'target': target
         }
 
@@ -288,12 +341,12 @@ class FuturePredictionTeacher(nn.Module):
         return load_model(path,
                           model_class='motion',
                           parse_path=self.parse_paths,
-                          **params)
+                          **params) if path else None
     def _load_boundary_model(self, path, params):
         return load_model(path,
                           model_class='boundary',
                           parse_path=self.parse_paths,
-                          **params)
+                          **params) if path else None
     def _build_target_model(self, params):
         return targets.FuturePredictionTarget(
             **params)
