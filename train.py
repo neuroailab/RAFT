@@ -29,6 +29,8 @@ from bootraft import (BootRaft,
                       ForegroundMaskTarget,
                       IsMovingTarget,
                       DiffusionTarget)
+import teachers
+
 import evaluate
 import datasets
 
@@ -315,7 +317,7 @@ def train(args):
     elif args.model.lower() == 'boundary':
         model_cls = BoundaryClassifier
         print("used BoundaryClassifier")
-    else:
+    elif args.model.lower() == 'flow':
         model_cls = RAFT
         print("used RAFT")
     model = nn.DataParallel(model_cls(args), device_ids=args.gpus)
@@ -357,7 +359,7 @@ def train(args):
         print("TEACHER")
         teacher.eval()
         teacher.module.freeze_bn()
-    elif (args.motion_ckpt is not None) or (args.features_ckpt is not None):
+    elif args.model.lower() != 'flow' and (args.motion_ckpt is not None) or (args.features_ckpt is not None):
         selfsup = True
         teacher = load_motion_teacher(args)
     else:
@@ -402,6 +404,23 @@ def train(args):
         def get_video(img1, img2, img0, **kwargs):
             assert img1.dtype == img2.dtype == img0.dtype == torch.float32
             return (None, torch.stack([img0, img1, img2], 1) / 255.0)
+    elif args.model.lower() == 'flow':
+        target_net = nn.DataParallel(teachers.FuturePredictionTeacher(
+            downsample_factor=args.teacher_downsample_factor,
+            target_motion_thresh=args.motion_thresh,
+            target_boundary_thresh=args.boundary_thresh,
+            concat_rgb_features=True,
+            concat_boundary_features=True,
+            concat_fire_features=True,
+            motion_path=args.motion_ckpt,
+            boundary_path=args.boundary_ckpt,
+            parse_paths=True
+        ), device_ids=args.gpus).cuda()
+        print("FuturePredictionTarget")
+        selfsup = True
+        def get_video(img1, img2, img0, **kwargs):
+            assert img1.dtype == img2.dtype == img0.dtype == torch.float32
+            return (None, torch.stack([img0, img1, img2], 1) / 255.0)
 
     train_loader, epoch_size = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, model)
@@ -423,6 +442,11 @@ def train(args):
             except StopIteration:
                 train_loader.dataset.reset_iterator()
                 data_blob = iter(train_loader).next()
+            except Exception as e:
+                print("skipping step %d due to %s" % (total_steps, e))
+                total_steps += 1
+                continue
+
             optimizer.zero_grad()
             if selfsup:
                 image1, image2 = [x.cuda() for x in data_blob[:2]]
@@ -430,7 +454,8 @@ def train(args):
                 if args.model.lower() in ['motion',
                                           'occlusion',
                                           'thingness',
-                                          'boundary'
+                                          'boundary',
+                                          'flow'
                 ]:
                     image0 = data_blob[2].cuda()
 
@@ -473,6 +498,10 @@ def train(args):
 
                     flow = [video, prior]
 
+            elif selfsup and (args.model.lower() in ['flow']):
+                assert target_net is not None
+                flow = [image1, image2]
+
             elif selfsup:
                 _, flow = teacher(_ds(image1), _ds(image2), iters=args.teacher_iters, test_mode=True)
                 # print("model", args.model, "target", flow.shape, flow.amin(), flow.amax())
@@ -497,6 +526,7 @@ def train(args):
                 #     'video': video,
                 #     'target': flow
                 # }, PATH)
+
 
             if args.model.lower() in ['centroid', 'motion_centroid']:
                 loss, metrics = centroid_loss(flow_predictions, flow, valid, args.gamma, scale_to_pixels=args.scale_centroids, pixel_thresh=args.pixel_thresh)
@@ -584,6 +614,7 @@ def get_args(cmd=None):
     parser.add_argument('--iters', type=int, default=12)
     parser.add_argument('--corr_levels', type=int, default=4)
     parser.add_argument('--corr_radius', type=int, default=4)
+    parser.add_argument('--gate_stride', type=int, default=2)
     parser.add_argument('--wdecay', type=float, default=.00005)
     parser.add_argument('--epsilon', type=float, default=1e-8)
     parser.add_argument('--clip', type=float, default=1.0)
@@ -602,6 +633,7 @@ def get_args(cmd=None):
     parser.add_argument('--teacher_ckpt', help='checkpoint for a pretrained RAFT. If None, use GT')
     parser.add_argument('--teacher_iters', type=int, default=24)
     parser.add_argument('--motion_ckpt', help='checkpoint for a pretrained motion model')
+    parser.add_argument('--boundary_ckpt', help='checkpoint for a pretrained boundary model')
     parser.add_argument('--features_ckpt', help='checkpoint for a pretrained features model')
 
     # motion propagation
@@ -613,6 +645,7 @@ def get_args(cmd=None):
     parser.add_argument('--teacher_downsample_factor', type=int, default=1)
     parser.add_argument('--patch_radius', type=int, default=0)
     parser.add_argument('--motion_thresh', type=float, default=None)
+    parser.add_argument('--boundary_thresh', type=float, default=None)
     parser.add_argument('--target_thresh', type=float, default=0.75)
     parser.add_argument('--pixel_thresh', type=int, default=None)
     parser.add_argument('--positive_thresh', type=float, default=0.4)

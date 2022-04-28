@@ -48,7 +48,9 @@ class RAFT(nn.Module):
         if args.small:
             self.fnet = SmallEncoder(output_dim=128, norm_fn='instance', dropout=args.dropout, gate_stride=args.gate_stride)
             self.cnet = SmallEncoder(output_dim=hdim+cdim, norm_fn='none', dropout=args.dropout, gate_stride=args.gate_stride)
-            self.update_block = SmallUpdateBlock(self.args, hidden_dim=hdim)
+            self.update_block = SmallUpdateBlock(
+                self.args,
+                hidden_dim=hdim)
 
         else:
             self.fnet = BasicEncoder(output_dim=256, norm_fn='instance', dropout=args.dropout, gate_stride=args.gate_stride)

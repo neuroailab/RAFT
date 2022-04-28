@@ -48,8 +48,21 @@ def get_args(cmd=None):
         args = parser.parse_args(cmd)
     return args
 
+def path_to_args(path):
+    args = {
+        'small': 'small' in path,
+        'gate_stride': 2 if ('gs1' not in path) else 1
+    }
+    if 'boundary' in path:
+        args.update({
+            'orientation_type': 'regression' if ('Reg' in path) else 'classification',
+            'static_input': 'Static' in path
+        })
+    return args
+
 def load_model(load_path,
                model_class=None,
+               parse_path=False,
                **kwargs):
 
     path = Path(load_path) if load_path else None
@@ -77,6 +90,8 @@ def load_model(load_path,
     assert cls is not None, "Wasn't able to infer model class"
 
     ## get the args
+    if parse_path:
+        kwargs.update(path_to_args(load_path))
     args = get_args("")
     for k,v in kwargs.items():
         args.__setattr__(k,v)
@@ -93,6 +108,7 @@ def load_model(load_path,
         print(did_load, type(model).__name__, load_path)
 
     return model
+
 
 class MotionToStaticTeacher(nn.Module):
     """
@@ -185,7 +201,7 @@ class MotionToStaticTeacher(nn.Module):
             self.boundary_model, img1, img2, iters=kwargs.get('boundary_iters', 12)
         )
         target = self.target_model(
-            video=None,
+            video=torch.stack([img1, img2], 1) * 255.0,
             motion=motion,
             boundaries=boundaries,
             orientations=orientations,
@@ -201,6 +217,131 @@ class MotionToStaticTeacher(nn.Module):
             'boundary_upsample_mask': b_ups_mask,
             'target': target
         }
+
+class FuturePredictionTeacher(nn.Module):
+    """
+    Module that takes pretrained motion and/or boundary models,
+    and optionally pretrained spatial affinities, and uses them to
+    create a target for either pixelwise future prediction
+    (i.e. optical flow / temporal affinities) or for centroid motion.
+    """
+    DEFAULT_FP_PARAMS = {
+        'num_iters': 200,
+        'motion_thresh': 0.5,
+        'boundary_thresh': 0.1,
+        'beta': 10.0,
+        'normalize': True
+    }
+    DEFAULT_TARGET_PARAMS = {
+        'warp_radius': 3,
+        'warp_dilation': 1,
+        'normalize_features': False,
+        'patch_radius': 1,
+        'error_func': 'sum',
+        'distance_func': None,
+        'target_type': 'regression',
+        'beta': 10.0
+    }
+
+    def __init__(self,
+                 downsample_factor=1,
+                 target_motion_thresh=0.5,
+                 target_boundary_thresh=0.1,
+                 concat_rgb_features=True,
+                 concat_motion_features=False,
+                 concat_boundary_features=True,
+                 concat_orientation_features=False,
+                 concat_fire_features=True,
+                 motion_path=None,
+                 motion_model_params={},
+                 boundary_path=None,
+                 boundary_model_params={},
+                 parse_paths=False,
+                 fp_params=DEFAULT_FP_PARAMS,
+                 target_model_params=DEFAULT_TARGET_PARAMS
+    ):
+        super().__init__()
+        self.downsample_factor = downsample_factor
+        self.target_boundary_thresh = target_boundary_thresh
+        self.target_motion_thresh = target_motion_thresh
+        self._concat_r = concat_rgb_features
+        self._concat_m = concat_motion_features
+        self._concat_b = concat_boundary_features
+        self._concat_c = concat_orientation_features
+        self._concat_f = concat_fire_features
+
+        self.parse_paths = parse_paths
+        self.motion_model = self._load_motion_model(
+            motion_path,
+            copy.deepcopy(motion_model_params))
+        self.boundary_model = self._load_boundary_model(
+            boundary_path,
+            copy.deepcopy(boundary_model_params))
+        self.FP = fprop.FirePropagation(
+            downsample_factor=self.downsample_factor,
+            compute_kp_args=False,
+            **copy.deepcopy(fp_params))
+        self.target_model = self._build_target_model(
+            copy.deepcopy(target_model_params))
+
+    def _load_motion_model(self, path, params):
+        return load_model(path,
+                          model_class='motion',
+                          parse_path=self.parse_paths,
+                          **params)
+    def _load_boundary_model(self, path, params):
+        return load_model(path,
+                          model_class='boundary',
+                          parse_path=self.parse_paths,
+                          **params)
+    def _build_target_model(self, params):
+        return targets.FuturePredictionTarget(
+            **params)
+
+    def _get_features(self, x, y, adj=None, *args, **kwargs):
+        motion, m_ups_mask = MotionToStaticTeacher.get_motion_preds(
+            self.motion_model, x, y, iters=kwargs.get('motion_iters', 12)
+        )
+        b_preds = MotionToStaticTeacher.get_boundary_preds(
+            self.boundary_model, x, y, iters=kwargs.get('boundary_iters', 12)
+        )
+        boundaries, orientations, _motion, b_ups_mask = b_preds
+        fire = self.FP(
+            motion=motion,
+            boundaries=boundaries,
+            orientations=orientations
+        )
+        orientations = orientations * (boundaries > self.target_boundary_thresh).float()
+        return (self.ds(motion), self.ds(boundaries), self.ds(orientations), fire)
+
+    def forward(self, img1, img2, adj=None, *args, **kwargs):
+
+        self.ds = (lambda x: F.avg_pool2d(
+            x, self.downsample_factor, stride=self.downsample_factor)) \
+            if self.downsample_factor > 1 else (lambda x: x)
+        _to_movie = lambda z: torch.stack([z[0], z[1]], 1)
+        rgb = torch.stack([self.ds(img1 / 255.), self.ds(img2 / 255.)], 1)
+        motion, boundaries, orientations, fire = map(
+            _to_movie,
+            zip(self._get_features(img1, img2), self._get_features(img2, img1))
+        )
+        features = []
+        if self._concat_r:
+            features.append(rgb)
+        if self._concat_m:
+            features.append(motion)
+        if self._concat_b:
+            features.append(boundaries)
+        if self._concat_c:
+            features.append(orientations)
+        if self._concat_f:
+            features.append(fire)
+        features = torch.cat(features, -3)
+        target = self.target_model(features)[0][:,0] # [B,2,H',W']
+        interior = torch.logical_or(
+            fire[:,0] > 0, boundaries[:,0] > self.target_boundary_thresh).float()
+        target = target * (motion[:,0] > self.target_motion_thresh).float() * interior
+        return target
 
 class KpPrior(nn.Module):
     def __init__(self,
