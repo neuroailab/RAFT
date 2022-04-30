@@ -74,6 +74,7 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
     else:
         valid = (valid >= 0.5) & (mag < max_flow)
         valid = valid.float()
+    num_px = valid.sum((-2,-1)).clamp(min=1)
 
     if list(flow_gt.shape[-2:]) != list(flow_preds[-1].shape[-2:]):
         _ds = lambda x: F.avg_pool2d(
@@ -91,8 +92,8 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
         loss_fn = lambda logits, labels: loss_cls(_ds(logits), labels)
     else:
         loss_fn = lambda logits, labels: (_ds(logits) - labels).abs()
-        num_px = valid.sum((-2,-1)).clamp(min=1)
         assert flow_preds[-1].shape[-3] == 2, flow_preds[-1].shape
+
 
     # print("num foreground px", flow_gt[0].sum())
     # print("total pixels", np.prod(flow_gt.shape[-2:]))
