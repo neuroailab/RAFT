@@ -73,6 +73,7 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
         valid = (mag < max_flow)
     else:
         valid = (valid >= 0.5) & (mag < max_flow)
+        valid = valid.float()
 
     if list(flow_gt.shape[-2:]) != list(flow_preds[-1].shape[-2:]):
         _ds = lambda x: F.avg_pool2d(
@@ -90,6 +91,7 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
         loss_fn = lambda logits, labels: loss_cls(_ds(logits), labels)
     else:
         loss_fn = lambda logits, labels: (_ds(logits) - labels).abs()
+        num_px = valid.sum((-2,-1)).clamp(min=1)
         assert flow_preds[-1].shape[-3] == 2, flow_preds[-1].shape
 
     # print("num foreground px", flow_gt[0].sum())
@@ -106,7 +108,7 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
     for i in range(n_predictions):
         i_weight = gamma**(n_predictions - i - 1)
         i_loss = loss_fn(flow_preds[i], flow_gt) * gt_weight
-        flow_loss += i_weight * (valid[:, None] * i_loss).mean()
+        flow_loss += ((i_weight * valid * i_loss).sum((-2,-1)) / num_px).mean()
 
     # epe = torch.sum((flow_preds[-1] - flow_gt)**2, dim=1).sqrt()
     # epe = epe.view(-1)[valid.view(-1)]
@@ -409,9 +411,10 @@ def train(args):
             downsample_factor=args.teacher_downsample_factor,
             target_motion_thresh=args.motion_thresh,
             target_boundary_thresh=args.boundary_thresh,
-            concat_rgb_features=True,
-            concat_boundary_features=True,
-            concat_fire_features=True,
+            concat_rgb_features=(args.rgb_flow),
+            concat_boundary_features=(args.boundary_flow),
+            concat_orientation_features=(args.boundary_flow),
+            concat_fire_features=False,
             motion_path=args.motion_ckpt,
             boundary_path=args.boundary_ckpt,
             parse_paths=True
@@ -438,6 +441,8 @@ def train(args):
     while should_keep_training:
         epoch += 1
         for i_batch in range(epoch_size // args.batch_size):
+            import time
+            t1 = time.time()
             try:
                 data_blob = iter(train_loader).next()
             except StopIteration:
@@ -447,6 +452,8 @@ def train(args):
                 print("skipping step %d due to %s" % (total_steps, e))
                 total_steps += 1
                 continue
+            t2 = time.time()
+            print("step time", i_batch, t2-t1)
 
             optimizer.zero_grad()
             if selfsup:
@@ -515,8 +522,12 @@ def train(args):
                 if isinstance(flow, (tuple, list)):
                     if 'combined' in args.orientation_type:
                         flow = torch.cat([flow[0], flow[1]], 1)
+                    elif args.model.lower() == 'boundary':
+                        flow = flow[1]
+                    elif args.model.lower() == 'flow' and args.boundary_flow:
+                        flow, valid = flow[0], flow[2]
                     else:
-                        flow = flow[1] if args.model.lower() == 'boundary' else flow[0]
+                        flow = flow[0]
                 if len(flow.shape) == 5:
                     flow = flow.squeeze(1)
 
@@ -640,6 +651,8 @@ def get_args(cmd=None):
     # motion propagation
     parser.add_argument('--diffusion_target', action='store_true')
     parser.add_argument('--orientation_type', default='classification')
+    parser.add_argument('--rgb_flow', action='store_true')
+    parser.add_argument('--boundary_flow', action='store_true')
     parser.add_argument('--separate_boundary_models', action='store_true')
     parser.add_argument('--zscore_target', action='store_true')
     parser.add_argument('--downsample_factor', type=int, default=1)

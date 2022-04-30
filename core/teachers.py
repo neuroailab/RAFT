@@ -229,14 +229,14 @@ class MotionToStaticTeacher(nn.Module):
         if resolution is not None:
             flow_preds = targets.OpticalFlowTarget.delta_hw_to_discrete_flow(
                 flow_preds, resolution=resolution, from_xy=False, z_score=False)
-        else:
-            flow_mask = (flow_preds.square().sum(1, True).sqrt() > thresh).float()
-            flow_preds = fprop.spatial_moments_to_circular_target(flow_preds, beta)
-            static = torch.cat([
-                torch.zeros_like(flow_preds[:,:4]),
-                torch.ones_like(flow_preds[:,4:5]),
-                torch.zeros_like(flow_preds[:,5:])], 1)
-            flow_preds = flow_preds * flow_mask + static * (1 - flow_mask)
+        # else:
+        #     flow_mask = (flow_preds.square().sum(1, True).sqrt() > thresh).float()
+        #     flow_preds = fprop.spatial_moments_to_circular_target(flow_preds, beta)
+        #     static = torch.cat([
+        #         torch.zeros_like(flow_preds[:,:4]),
+        #         torch.ones_like(flow_preds[:,4:5]),
+        #         torch.zeros_like(flow_preds[:,5:])], 1)
+        #     flow_preds = flow_preds * flow_mask + static * (1 - flow_mask)
 
         return (flow_preds, ups_mask)
 
@@ -256,6 +256,7 @@ class MotionToStaticTeacher(nn.Module):
             motion=motion,
             boundaries=boundaries,
             orientations=orientations,
+            flow=flow,
             adj=adj
         )
         if not self.return_intermediates:
@@ -391,10 +392,11 @@ class FuturePredictionTeacher(nn.Module):
             features.append(fire)
         features = torch.cat(features, -3)
         target = self.target_model(features)[0][:,0] # [B,2,H',W']
-        interior = torch.logical_or(
+        interior_mask = torch.logical_or(
             fire[:,0] > 0, boundaries[:,0] > self.target_boundary_thresh).float()
-        target = target * (motion[:,0] > self.target_motion_thresh).float() * interior
-        return target
+        target = target * (motion[:,0] > self.target_motion_thresh).float() * interior_mask
+        boundary_mask = (boundaries[:,0] > self.target_boundary_thresh).float()
+        return (target, interior_mask, boundary_mask)
 
 class KpPrior(nn.Module):
     def __init__(self,
