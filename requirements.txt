@@ -1,0 +1,9 @@
+
+gpustat
+opencv-python
+itermplot
+kornia
+git+https://github.com/facebookresearch/detectron2.git
+-f https://data.pyg.org/whl/torch-1.11.0+cu113.html
+torch-scatter
+torch-sparse

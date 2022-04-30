@@ -10,7 +10,7 @@ from torchvision import transforms
 from core.teachers import MotionToStaticTeacher
 from core.eisen import EISEN
 from teachers import get_args
-
+import matplotlib.pyplot as plt
 
 def _get_model_class(name):
     cls = None
@@ -24,7 +24,8 @@ def _get_model_class(name):
 
 
 def load_model(model_class, load_path, freeze, **kwargs):
-
+    if model_class == 'raft_pretrained':
+        return None # load from saved flows from pretrained models
     cls = _get_model_class(model_class)
     assert cls is not None, "Wasn't able to infer model class"
 
@@ -50,22 +51,39 @@ def load_model(model_class, load_path, freeze, **kwargs):
 
 
 class TeacherStudent(nn.Module):
-    def __init__(self,
-                 teacher_class, teacher_params, teacher_load_path,
-                 student_class, student_params, student_load_path):
+    def __init__(self, args):
         super().__init__()
+        assert args.teacher_class in ['raft_pretrained', 'motion_to_static'], f"Unexpected teacher class {args.teacher_class}"
+        print('Teacher class: ', args.teacher_class)
+        self.teacher = load_model(args.teacher_class, args.teacher_load_path, freeze=True, **args.teacher_params)
+        self.student = load_model(args.student_class, args.student_load_path, freeze=False, **args.student_params)
+        self.args = args
 
-        self.teacher_model = load_model(teacher_class, teacher_load_path, freeze=True, **teacher_params)
-        self.student_model = load_model(student_class, student_load_path, freeze=False, **student_params)
-        self.teacher_model.eval()
+    def forward(self, img1, img2, iters, raft_moving=None):
 
+        if self.args.teacher_class == 'raft_pretrained':
+            print('Using RAFT flow')
+            target = raft_moving
+        else:
+            self.teacher.eval()
+            with torch.no_grad():
+                target = self.teacher(img1, img2) + 1 # add 1 so that the background has value zero
 
-    def forward(self, x):
-        img1, img2 = x[:, -2], x[:, -1]
-        target = self.teacher(img1.cuda(), img2.cuda())
-        affinity, loss, segments = self.student_model(img1, target, get_segments=False)
+        # self.visualize_targets(img1, target)
+        affinity, loss, segments = self.student(img1, target, get_segments=False)
+        metric = {'loss': loss.detach()}
+        return loss, metric
 
-        return loss
+    @staticmethod
+    def visualize_targets(img, seg):
+        plt.subplot(1, 2, 1)
+        plt.imshow(img[0].permute(1, 2, 0).cpu())
+        plt.axis('off')
+        plt.subplot(1, 2, 2)
+        plt.imshow(seg[0].cpu())
+        plt.axis('off')
+        plt.show()
+        plt.close()
 
 
 

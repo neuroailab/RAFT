@@ -190,3 +190,5 @@ def local_to_sparse_global_affinity(local_adj, sample_inds, activated=None, spar
         raise ValueError('Current KP implementation assumes tranposed affinities')
 
     return global_adj
+
+

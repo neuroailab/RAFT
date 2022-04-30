@@ -30,8 +30,8 @@ class EISEN(nn.Module):
         super(EISEN, self).__init__()
 
         # [Backbone encoder]
-        self.encoder = ResNetFPN(min_level=2, max_level=4)
-        output_dim = self.encoder.output_dim
+        self.backbone = ResNetFPN(min_level=2, max_level=4)
+        output_dim = self.backbone.output_dim
 
         # [Affinity decoder]
         self.key_query_proj = KeyQueryExtractor(input_dim=output_dim, kq_dim=kq_dim, latent_dim=latent_dim)
@@ -51,10 +51,14 @@ class EISEN(nn.Module):
         self.num_affinity_samples = num_affinity_samples
         self.affinity_res = affinity_res
 
-    def forward(self, img, segment_target, get_segment=False):
+    def forward(self, img, segment_target, get_segments=False):
         """ build outputs at multiple levels"""
 
-        features = self.encoder(img)
+        # Normalize inputs
+        img = 2 * (img / 255.0) - 1.0
+
+        # Backbone
+        features = self.backbone(img)
 
         # Key & query projection
         key, query = self.key_query_proj(features)
@@ -71,7 +75,7 @@ class EISEN(nn.Module):
         loss = self.compute_loss(affinity_logits, sample_inds, segment_target)
 
         # Compute segments via propagation and competition
-        segments = self.compute_segments(affinity_logits, sample_inds) if get_segment else None
+        segments = self.compute_segments(affinity_logits, sample_inds) if get_segments else None
 
 
         return affinity_logits, loss, segments
@@ -123,7 +127,6 @@ class EISEN(nn.Module):
         B, N, K = logits.shape
 
         # 0. compute binary affinity targets
-        assert B == 1, "current implementation only supports batch size 1"
         segment_targets = F.interpolate(segment_targets.unsqueeze(1).float(), self.affinity_res, mode='nearest')
         segment_targets = segment_targets.reshape(B, N).unsqueeze(-1).long()
         if sample_inds is not None:

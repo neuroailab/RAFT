@@ -22,12 +22,12 @@ from utils import frame_utils
 from utils.augmentor import FlowAugmentor, SparseFlowAugmentor
 
 ## to wrap
-from dorsalventral.data.robonet import (RobonetDataset,
-                                        ROBONET_DIR,
-                                        get_robot_names)
-from dorsalventral.data.davis import (DavisDataset,
-                                      get_dataset_names)
-from dorsalventral.data.movi import MoviDataset
+# from dorsalventral.data.robonet import (RobonetDataset,
+#                                         ROBONET_DIR,
+#                                         get_robot_names)
+# from dorsalventral.data.davis import (DavisDataset,
+#                                       get_dataset_names)
+# from dorsalventral.data.movi import MoviDataset
 from dorsalventral.data.utils import ToTensor, RgbToIntSegments
 
 import kornia.color
@@ -533,12 +533,14 @@ class TdwPngDataset(TdwFlowDataset):
                  split='training',
                  dataset_names='[0-9]*',
                  test_dataset_names='[0-3]',
-                 filepattern='*',
+                 filepattern='*[0-8]',
                  test_filepattern='*9',
                  delta_time=1,
+                 flow_threshold=0.5,
                  min_start_frame=5,
                  max_start_frame=5,
                  get_gt_flow=False,
+                 get_raft_flow=False,
                  get_gt_segments=False,
                  get_backward_frame=False,
                  scale_to_pixels=True,
@@ -565,11 +567,15 @@ class TdwPngDataset(TdwFlowDataset):
 
         self.is_test = (not self.training)
 
+        self.file_list = self.train_files if self.training else self.test_files
+
         # frames and which tensors to get
         self.delta_time = self.dT = delta_time
         self.delta_time = self.dT = delta_time
         self.min_start_frame = min_start_frame
         self.max_start_frame = max_start_frame
+
+        self.frame_idx = self.min_start_frame
         self.get_backward_frame = get_backward_frame
         self.scale_to_pixels = scale_to_pixels
 
@@ -582,6 +588,11 @@ class TdwPngDataset(TdwFlowDataset):
         ## the frames for training given by a json file
         self.training_frames = training_frames
         self.testing_frames = testing_frames
+
+        ## RAFT flow
+        self.flow_threshold = flow_threshold
+        if not self.flow_threshold == 0.5:
+            print("Warning: other thresholds have not been tested for RAFT flow on TDW")
 
     def __len__(self):
         return len(self.file_list)
@@ -608,6 +619,11 @@ class TdwPngDataset(TdwFlowDataset):
 
     def get_video(self, f, frame_start = 0, video_length = 2):
         pass
+
+    @staticmethod
+    def read_frame(path, frame_idx):
+        image_path = os.path.join(path, format(frame_idx, '05d') + '.png')
+        return read_image(image_path)
 
     @staticmethod
     def _object_id_hash(objects, val=256, dtype=torch.long):
@@ -642,7 +658,33 @@ class TdwPngDataset(TdwFlowDataset):
 
         return raw_segment_map, segment_map, gt_moving
 
-    # def __getitem__(self, idx)
+    @staticmethod
+    def flow_to_segment(flow, thresh):
+        magnitude = (flow ** 2).sum(1) ** 0.5
+        motion_segment = (magnitude > thresh).unsqueeze(1)
+        return magnitude, motion_segment
+
+    def prepare_motion_segments(self, file_name):
+        load_path = file_name.replace('/images/', '/flows/') + '.pt'
+        raft_flow = torch.load(load_path)
+        _, motion_segment = self.flow_to_segment(raft_flow[None], thresh=self.flow_threshold)
+        return motion_segment[0, 0]
+
+    def __getitem__(self, idx):
+        try:
+            file_name = self.file_list[idx]
+            image_1 = self.read_frame(file_name, frame_idx=self.frame_idx)
+            image_2 = self.read_frame(file_name, frame_idx=self.frame_idx + self.delta_time)
+            raft_moving = self.prepare_motion_segments(file_name)
+            segment_colors = self.read_frame(file_name.replace('/images/', '/objects/'), frame_idx=self.frame_idx)
+            _, segment_map, gt_moving = self.process_segmentation_color(segment_colors, file_name)
+            self.save_data = (image_1, image_2, segment_map, gt_moving, raft_moving)
+            return (image_1, image_2, segment_map, gt_moving, raft_moving)
+
+        except Exception as e:
+            print('Encountering error in dataloader, used previous data: ', e)
+            return self.save_data
+
 
 
 class TdwAffinityDataset(torch.utils.data.Dataset):
@@ -866,110 +908,110 @@ class TdwAffinityDataset(torch.utils.data.Dataset):
 
         return raw_segment_map, segment_map, gt_moving
 
-class MoviFlowDataset(MoviDataset):
-
-    def __init__(self,
-                 root,
-                 split='train',
-                 sequence_length=3,
-                 passes=["images", "objects", "flow"],
-                 *args, **kwargs):
-        super().__init__(dataset_dir=root,
-                         split=split,
-                         sequence_length=sequence_length,
-                         passes=passes,
-                         *args, **kwargs)
-
-        self.is_test = ('train' not in self.split)
-
-    def __getitem__(self, idx):
-        data = super().__getitem__(idx)
-        video = data['images'].float()
-        img1, img2 = video[-2], video[-1] # index and forward frames
-        img0 = None
-        if video.shape[0] == 3:
-            img0 = video[0]
-        elif self.is_test and (img0 is None):
-            minv, maxv = self.meta['forward_flow_range']
-            img0 = data['flow'][-2] / 65535 * (maxv - minv) + minv
-
-        segments = data.get('objects', None)
-        if segments is not None:
-            segments = segments[-2] # index frame
-
-        return (img1, img2, img0, segments)
-
-class RobonetFlowDataset(RobonetDataset):
-
-    all_robots = get_robot_names()
-    def __init__(self,
-                 root=ROBONET_DIR,
-                 dataset_names=all_robots,
-                 sequence_length=2,
-                 *args, **kwargs):
-        if dataset_names is None:
-            dataset_names = self.all_robots
-        super().__init__(dataset_dir=root,
-                         dataset_names=dataset_names,
-                         sequence_length=sequence_length,
-                         *args, **kwargs)
-
-
-    def __getitem__(self, idx):
-
-        data_dict = super().__getitem__(idx)
-        img1, img2 = data_dict['images'][:2].split([1,1], 0)
-        return img1[0].float(), img2[0].float()
-
-    def get_video(self, f, frame_start = 0, num_frames = 2):
-        meta = self.meta_data_frame[self.meta_data_frame.index == Path(str(f.filename)).name]
-        video_length = int(meta['img_T'])
-        if (frame_start + num_frames) > video_length:
-            return None
-        video = self.get_movie(f, meta, frame=frame_start, num_frames=num_frames, transform={})
-        return list(video)
-
-class DavisFlowDataset(DavisDataset):
-
-    all_dataset_names = get_dataset_names()
-    def __init__(self,
-                 root='/data5/dbear/DAVIS2016',
-                 dataset_names=all_dataset_names,
-                 sequence_length=2,
-                 get_gt_flow=False,
-                 flow_gap=1,
-                 *args, **kwargs):
-        if dataset_names is None:
-            dataset_names = self.all_dataset_names
-        super().__init__(dataset_dir=root,
-                         dataset_names=dataset_names,
-                         sequence_length=sequence_length,
-                         to_tensor=True,
-                         get_flows=get_gt_flow,
-                         flow_gap=flow_gap,
-                         *args, **kwargs)
-
-        ## center crop
-        size = self.resize_to or (1080, 1920)
-        crop_size = (8 * (size[0] // 8), 8 * (size[1] //  8))
-        if crop_size == size:
-            self.crop = nn.Identity()
-        else:
-            self.crop = transforms.CenterCrop(crop_size)
-
-    def __getitem__(self, idx):
-        data_dict = super().__getitem__(idx)
-        if 'segments' in data_dict.keys():
-            self.gt = self.crop(data_dict['segments'])
-        if 'flow_images' in data_dict.keys():
-            self.flow_images = self.crop(data_dict['flow_images'])
-
-        img1, img2 = [self.crop(im) for im in list(data_dict['images'][:2])]
-        if self.get_flows:
-            flow = self.crop(data_dict['flows'][0])
-            return img1.float(), img2.float(), flow
-        else:
-            return img1.float(), img2.float()
+# class MoviFlowDataset(MoviDataset):
+#
+#     def __init__(self,
+#                  root,
+#                  split='train',
+#                  sequence_length=3,
+#                  passes=["images", "objects", "flow"],
+#                  *args, **kwargs):
+#         super().__init__(dataset_dir=root,
+#                          split=split,
+#                          sequence_length=sequence_length,
+#                          passes=passes,
+#                          *args, **kwargs)
+#
+#         self.is_test = ('train' not in self.split)
+#
+#     def __getitem__(self, idx):
+#         data = super().__getitem__(idx)
+#         video = data['images'].float()
+#         img1, img2 = video[-2], video[-1] # index and forward frames
+#         img0 = None
+#         if video.shape[0] == 3:
+#             img0 = video[0]
+#         elif self.is_test and (img0 is None):
+#             minv, maxv = self.meta['forward_flow_range']
+#             img0 = data['flow'][-2] / 65535 * (maxv - minv) + minv
+#
+#         segments = data.get('objects', None)
+#         if segments is not None:
+#             segments = segments[-2] # index frame
+#
+#         return (img1, img2, img0, segments)
+#
+# class RobonetFlowDataset(RobonetDataset):
+#
+#     all_robots = get_robot_names()
+#     def __init__(self,
+#                  root=ROBONET_DIR,
+#                  dataset_names=all_robots,
+#                  sequence_length=2,
+#                  *args, **kwargs):
+#         if dataset_names is None:
+#             dataset_names = self.all_robots
+#         super().__init__(dataset_dir=root,
+#                          dataset_names=dataset_names,
+#                          sequence_length=sequence_length,
+#                          *args, **kwargs)
+#
+#
+#     def __getitem__(self, idx):
+#
+#         data_dict = super().__getitem__(idx)
+#         img1, img2 = data_dict['images'][:2].split([1,1], 0)
+#         return img1[0].float(), img2[0].float()
+#
+#     def get_video(self, f, frame_start = 0, num_frames = 2):
+#         meta = self.meta_data_frame[self.meta_data_frame.index == Path(str(f.filename)).name]
+#         video_length = int(meta['img_T'])
+#         if (frame_start + num_frames) > video_length:
+#             return None
+#         video = self.get_movie(f, meta, frame=frame_start, num_frames=num_frames, transform={})
+#         return list(video)
+#
+# class DavisFlowDataset(DavisDataset):
+#
+#     all_dataset_names = get_dataset_names()
+#     def __init__(self,
+#                  root='/data5/dbear/DAVIS2016',
+#                  dataset_names=all_dataset_names,
+#                  sequence_length=2,
+#                  get_gt_flow=False,
+#                  flow_gap=1,
+#                  *args, **kwargs):
+#         if dataset_names is None:
+#             dataset_names = self.all_dataset_names
+#         super().__init__(dataset_dir=root,
+#                          dataset_names=dataset_names,
+#                          sequence_length=sequence_length,
+#                          to_tensor=True,
+#                          get_flows=get_gt_flow,
+#                          flow_gap=flow_gap,
+#                          *args, **kwargs)
+#
+#         ## center crop
+#         size = self.resize_to or (1080, 1920)
+#         crop_size = (8 * (size[0] // 8), 8 * (size[1] //  8))
+#         if crop_size == size:
+#             self.crop = nn.Identity()
+#         else:
+#             self.crop = transforms.CenterCrop(crop_size)
+#
+#     def __getitem__(self, idx):
+#         data_dict = super().__getitem__(idx)
+#         if 'segments' in data_dict.keys():
+#             self.gt = self.crop(data_dict['segments'])
+#         if 'flow_images' in data_dict.keys():
+#             self.flow_images = self.crop(data_dict['flow_images'])
+#
+#         img1, img2 = [self.crop(im) for im in list(data_dict['images'][:2])]
+#         if self.get_flows:
+#             flow = self.crop(data_dict['flows'][0])
+#             return img1.float(), img2.float(), flow
+#         else:
+#             return img1.float(), img2.float()
 
 def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
     """ Create the data loader for the corresponding trainign set """
@@ -1000,6 +1042,8 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             get_backward_frame=((args.model in ['motion','occlusion', 'thingness', 'boundary']) and not args.supervised)
         )
 
+    elif args.stage == 'tdw_png':
+        train_dataset = TdwPngDataset(root='/data3/honglinc/tdw_playroom_small')
     elif 'movi' in args.stage:
         root = os.path.join(
             '/mnt/fs6/honglinc/dataset/tensorflow_datasets/',
