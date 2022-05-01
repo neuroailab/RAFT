@@ -120,16 +120,23 @@ class MotionToStaticTeacher(nn.Module):
     """
     DEFAULT_TARGET_PARAMS = {
         'diffusion_params': None,
+        'hp_params': fprop.MotionSegmentTarget.DEFAULT_HP_PARAMS,
         'fp_params': fprop.MotionSegmentTarget.DEFAULT_FP_PARAMS,
         'kp_params': fprop.MotionSegmentTarget.DEFAULT_KP_PARAMS,
         'competition_params': fprop.MotionSegmentTarget.DEFAULT_COMP_PARAMS
     }
+    STATIC_STUDENTS = ['eisen', 'thingness', 'centroid']
+    MOTION_STUDENTS = ['motion', 'boundaries', 'orientations', 'flow']
     def __init__(self,
+                 student_model_type='eisen',
                  downsample_factor=4,
                  motion_resolution=4,
                  motion_beta=10.0,
                  target_from_motion=False,
+                 target_motion_thresh=0.5,
+                 target_boundary_thresh=0.1,
                  return_intermediates=False,
+                 build_flow_target=False,
                  motion_path=None,
                  motion_model_params={},
                  boundary_path=None,
@@ -140,10 +147,14 @@ class MotionToStaticTeacher(nn.Module):
                  parse_paths=True,
                  **kwargs):
         super().__init__()
+
         self.downsample_factor = downsample_factor
         self.motion_resolution, self.motion_beta = motion_resolution, motion_beta
         self.target_from_motion = target_from_motion
+        self.target_motion_thresh = target_motion_thresh
+        self.target_boundary_thresh = target_boundary_thresh
         self.return_intermediates = return_intermediates
+        self.build_flow_target = build_flow_target
         self.parse_paths = parse_paths
 
         self.motion_model = self._load_motion_model(
@@ -157,6 +168,11 @@ class MotionToStaticTeacher(nn.Module):
             copy.deepcopy(flow_model_params))
         self.target_model = self._build_target_model(
             copy.deepcopy(target_model_params))
+        self.target_model.motion_thresh = self.target_motion_thresh
+        self.target_model.boundary_thresh = self.target_boundary_thresh
+
+        self.student_model_type = student_model_type
+        self._set_return_type()
 
     def _load_motion_model(self, path, params):
         return load_model(path,
@@ -177,8 +193,20 @@ class MotionToStaticTeacher(nn.Module):
         return fprop.MotionSegmentTarget(
             downsample_factor=self.downsample_factor,
             target_from_motion=self.target_from_motion,
+            build_flow_target=self.build_flow_target,
             adj_from_motion=True,
+            motion_resolution=self.motion_resolution,
             **params)
+
+    def _set_return_type(self):
+        if self.return_intermediates:
+            self.target_model.target_type = 'motion_static'
+        elif self.student_model_type in self.STATIC_STUDENTS:
+            self.target_model.target_type = 'static'
+        elif self.student_model_type in self.MOTION_STUDENTS:
+            self.target_model.target_type = 'motion'
+        else:
+            self.target_model.target_type = 'motion_static'
 
     @staticmethod
     def get_motion_preds(net, img1, img2, iters=12, backward=False, nonlinearity=torch.sigmoid):
@@ -240,6 +268,7 @@ class MotionToStaticTeacher(nn.Module):
 
         return (flow_preds, ups_mask)
 
+
     def forward(self, img1, img2, adj=None, *args, **kwargs):
 
         motion, m_ups_mask = self.get_motion_preds(
@@ -249,28 +278,35 @@ class MotionToStaticTeacher(nn.Module):
             self.boundary_model, img1, img2, iters=kwargs.get('boundary_iters', 12)
         )
         flow, f_ups_mask = self.get_flow_preds(
-            self.flow_model, img1, img2, iters=kwargs.get('flow_iters', 12),
-            resolution=self.motion_resolution, beta=self.motion_beta)
+            self.flow_model, img1, img2, iters=kwargs.get('flow_iters', 12))
+
+        video = torch.stack([img1, img2], 1)
         target = self.target_model(
-            video=torch.stack([img1, img2], 1) * 255.0,
+            video=(video / 255.),
             motion=motion,
             boundaries=boundaries,
             orientations=orientations,
             flow=flow,
             adj=adj
         )
-        if not self.return_intermediates:
+        if self.return_intermediates:
+            static_target, motion_targets = target
+            return {
+                'video': video,
+                'motion': motion_targets['motion'],
+                'boundaries': motion_targets['boundaries'],
+                'orientations': motion_targets['orientations'],
+                'flow': motion_targets['flow'],
+                'target': static_target
+            }
+        elif self.student_model_type in self.STATIC_STUDENTS:
             return target
-        return {
-            'motion': motion,
-            'boundaries': boundaries,
-            'orientations': orientations,
-            'flow': flow,
-            'motion_upsample_mask': m_ups_mask,
-            'boundary_upsample_mask': b_ups_mask,
-            'flow_upsample_mask': f_ups_mask,
-            'target': target
-        }
+        elif self.student_model_type in self.MOTION_STUDENTS:
+            return target[self.student_model_type]
+        else:
+            raise ValueError("%s is not a valid student model" %\
+                             self.student_model_type)
+
 
 class FuturePredictionTeacher(nn.Module):
     """

@@ -407,7 +407,7 @@ def train(args):
         def get_video(img1, img2, img0, **kwargs):
             assert img1.dtype == img2.dtype == img0.dtype == torch.float32
             return (None, torch.stack([img0, img1, img2], 1) / 255.0)
-    elif args.model.lower() == 'flow':
+    elif args.model.lower() == 'flow' and not args.bootstrap:
         target_net = nn.DataParallel(teachers.FuturePredictionTeacher(
             downsample_factor=args.teacher_downsample_factor,
             target_motion_thresh=args.motion_thresh,
@@ -422,6 +422,26 @@ def train(args):
         ), device_ids=args.gpus).cuda()
         target_net.eval()
         print("FuturePredictionTarget")
+        selfsup = True
+        def get_video(img1, img2, img0, **kwargs):
+            assert img1.dtype == img2.dtype == img0.dtype == torch.float32
+            return (None, torch.stack([img0, img1, img2], 1) / 255.0)
+
+    elif args.model.lower() == 'flow' and args.bootstrap:
+        assert args.flow_ckpt is not None
+        target_net = nn.DataParallel(teachers.MotionToStaticTeacher(
+            student_model_type='flow',
+            build_flow_target=True,
+            downsample_factor=args.teacher_downsample_factor,
+            motion_path=args.motion_ckpt,
+            boundary_path=args.boundary_ckpt,
+            flow_path=args.flow_ckpt,
+            parse_paths=True,
+            target_motion_thresh=args.motion_thresh,
+            target_boundary_thresh=args.boundary_thresh,
+        ), device_ids=args.gpus).cuda()
+        target_net.eval()
+        print(type(target_net.module).__name__)
         selfsup = True
         def get_video(img1, img2, img0, **kwargs):
             assert img1.dtype == img2.dtype == img0.dtype == torch.float32
@@ -453,8 +473,6 @@ def train(args):
                 print("skipping step %d due to %s" % (total_steps, e))
                 total_steps += 1
                 continue
-            t2 = time.time()
-            print("step time", i_batch, t2-t1)
 
             optimizer.zero_grad()
             if selfsup:
@@ -525,6 +543,8 @@ def train(args):
                         flow = torch.cat([flow[0], flow[1]], 1)
                     elif args.model.lower() == 'boundary':
                         flow = flow[1]
+                    elif args.model.lower() == 'flow' and args.bootstrap:
+                        flow = flow
                     elif args.model.lower() == 'flow' and args.boundary_flow:
                         flow, valid = flow[0], flow[2]
                     else:
@@ -591,6 +611,8 @@ def train(args):
                     model.module.freeze_bn()
 
             total_steps += 1
+            t2 = time.time()
+            print("step time", i_batch, t2-t1)
 
             if total_steps > args.num_steps:
                 should_keep_training = False
@@ -643,10 +665,12 @@ def get_args(cmd=None):
     ## model class
     parser.add_argument('--model', type=str, default='RAFT', help='Model class')
     parser.add_argument('--supervised', action='store_true', help='whether to supervise')
+    parser.add_argument('--bootstrap', action='store_true', help='whether to bootstrap')
     parser.add_argument('--teacher_ckpt', help='checkpoint for a pretrained RAFT. If None, use GT')
     parser.add_argument('--teacher_iters', type=int, default=24)
     parser.add_argument('--motion_ckpt', help='checkpoint for a pretrained motion model')
     parser.add_argument('--boundary_ckpt', help='checkpoint for a pretrained boundary model')
+    parser.add_argument('--flow_ckpt', help='checkpoint for a pretrained boundary model')
     parser.add_argument('--features_ckpt', help='checkpoint for a pretrained features model')
 
     # motion propagation
