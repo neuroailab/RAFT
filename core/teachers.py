@@ -269,7 +269,10 @@ class MotionToStaticTeacher(nn.Module):
         return (flow_preds, ups_mask)
 
 
-    def forward(self, img1, img2, adj=None, *args, **kwargs):
+    def forward(self, img1, img2,
+                adj=None,
+                bootstrap=True,
+                *args, **kwargs):
 
         motion, m_ups_mask = self.get_motion_preds(
             self.motion_model, img1, img2, iters=kwargs.get('motion_iters', 12)
@@ -281,13 +284,15 @@ class MotionToStaticTeacher(nn.Module):
             self.flow_model, img1, img2, iters=kwargs.get('flow_iters', 12))
 
         video = torch.stack([img1, img2], 1)
+        adj = adj.detach() if adj is not None else adj
         target = self.target_model(
             video=(video / 255.),
             motion=motion,
             boundaries=boundaries,
             orientations=orientations,
             flow=flow,
-            adj=adj
+            adj=adj,
+            bootstrap=bootstrap
         )
         if self.return_intermediates:
             static_target, motion_targets = target

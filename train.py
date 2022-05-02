@@ -257,7 +257,7 @@ class Logger:
     def __init__(self, model, scheduler):
         self.model = model
         self.scheduler = scheduler
-        self.total_steps = 0
+        self.total_steps = args.restore_step
         self.running_loss = {}
         self.writer = None
 
@@ -329,7 +329,7 @@ def train(args):
 
     if args.restore_ckpt is not None:
         did_load = model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
-        print(did_load)
+        print(did_load, type(model.module).__name__, args.restore_ckpt)
 
     model.cuda()
     model.train()
@@ -450,7 +450,7 @@ def train(args):
     train_loader, epoch_size = datasets.fetch_dataloader(args)
     optimizer, scheduler = fetch_optimizer(args, model)
 
-    total_steps = 0
+    total_steps = args.restore_step
     scaler = GradScaler(enabled=args.mixed_precision)
     logger = Logger(model, scheduler)
 
@@ -537,7 +537,12 @@ def train(args):
             if target_net is not None:
                 if not isinstance(flow, (list, tuple)):
                     flow = [flow]
-                flow = target_net(*flow)
+                flow = target_net(
+                    *flow,
+                    motion_iters=args.motion_iters,
+                    boundary_iters=args.boundary_iters,
+                    flow_iters=args.flow_iters
+                )
                 if isinstance(flow, (tuple, list)):
                     if 'combined' in args.orientation_type:
                         flow = torch.cat([flow[0], flow[1]], 1)
@@ -547,6 +552,7 @@ def train(args):
                         flow = flow
                     elif args.model.lower() == 'flow' and args.boundary_flow:
                         flow, valid = flow[0], flow[2]
+                        print("num px", valid.sum(), np.prod(list(valid.shape)))
                     else:
                         flow = flow[0]
                 if len(flow.shape) == 5:
@@ -641,6 +647,7 @@ def get_args(cmd=None):
 
     parser.add_argument('--lr', type=float, default=0.00002)
     parser.add_argument('--num_steps', type=int, default=100000)
+    parser.add_argument('--restore_step', type=int, default=0)
     parser.add_argument('--batch_size', type=int, default=6)
     parser.add_argument('--image_size', type=int, nargs='+', default=[384, 512])
     parser.add_argument('--gpus', type=int, nargs='+', default=[0])
@@ -668,6 +675,9 @@ def get_args(cmd=None):
     parser.add_argument('--bootstrap', action='store_true', help='whether to bootstrap')
     parser.add_argument('--teacher_ckpt', help='checkpoint for a pretrained RAFT. If None, use GT')
     parser.add_argument('--teacher_iters', type=int, default=24)
+    parser.add_argument('--motion_iters', type=int, default=12)
+    parser.add_argument('--boundary_iters', type=int, default=12)
+    parser.add_argument('--flow_iters', type=int, default=12)
     parser.add_argument('--motion_ckpt', help='checkpoint for a pretrained motion model')
     parser.add_argument('--boundary_ckpt', help='checkpoint for a pretrained boundary model')
     parser.add_argument('--flow_ckpt', help='checkpoint for a pretrained boundary model')
