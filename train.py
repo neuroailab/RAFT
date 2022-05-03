@@ -137,7 +137,10 @@ def boundary_loss(boundary_preds,
     b_loss = c_loss = loss = 0.0
 
     # break up boundary_target
-    b_target, c_target, c_target_discrete = boundary_target.split([1,2,8], 1)
+    if boundary_target.shape[1] == 3:
+        b_target, c_target = boundary_target.split([1,2], 1)
+    else:
+        b_target, c_target, c_target_discrete = boundary_target.split([1,2,8], 1)
     num_px = b_target.sum(dim=(-3,-2,-1)).clamp(min=1.)
 
     if pixel_thresh is not None:
@@ -362,9 +365,6 @@ def train(args):
         print("TEACHER")
         teacher.eval()
         teacher.module.freeze_bn()
-    elif args.model.lower() != 'flow' and (args.motion_ckpt is not None) or (args.features_ckpt is not None):
-        selfsup = True
-        teacher = load_motion_teacher(args)
     else:
         teacher = None
 
@@ -377,7 +377,7 @@ def train(args):
                                  'motion_centroid',
                                  'thingness',
                                  'boundary'
-    ]) and not args.supervised:
+    ]) and not args.supervised and not args.bootstrap:
         assert args.no_aug, "Can't use data augmentation with motion target"
         if args.diffusion_target:
             target_net = nn.DataParallel(DiffusionTarget(
@@ -427,10 +427,11 @@ def train(args):
             assert img1.dtype == img2.dtype == img0.dtype == torch.float32
             return (None, torch.stack([img0, img1, img2], 1) / 255.0)
 
-    elif args.model.lower() == 'flow' and args.bootstrap:
+    elif args.model.lower() in ['motion', 'boundary', 'flow'] and args.bootstrap:
         assert args.flow_ckpt is not None
+
         target_net = nn.DataParallel(teachers.MotionToStaticTeacher(
-            student_model_type='flow',
+            student_model_type=args.model.lower(),
             build_flow_target=True,
             downsample_factor=args.teacher_downsample_factor,
             motion_path=args.motion_ckpt,
@@ -506,7 +507,7 @@ def train(args):
                 H,W = image1.shape[-2:]
                 stride = args.teacher_downsample_factor
                 _ds = transforms.Resize([H // stride, W // stride])
-            if selfsup and args.model.lower() in ['motion',
+            if selfsup and not args.bootstrap and args.model.lower() in ['motion',
                                                   'occlusion',
                                                   'thingness',
                                                   'boundary'
@@ -525,7 +526,7 @@ def train(args):
 
                     flow = [video, prior]
 
-            elif selfsup and (args.model.lower() in ['flow']):
+            elif selfsup and args.bootstrap and (args.model.lower() in ['flow', 'motion', 'boundary']):
                 assert target_net is not None
                 flow = [image1, image2]
 
@@ -543,6 +544,7 @@ def train(args):
                     boundary_iters=args.boundary_iters,
                     flow_iters=args.flow_iters
                 )
+                print("TARGET SHAPE", flow.shape, args.model.lower())
                 if isinstance(flow, (tuple, list)):
                     if 'combined' in args.orientation_type:
                         flow = torch.cat([flow[0], flow[1]], 1)

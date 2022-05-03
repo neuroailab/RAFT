@@ -126,11 +126,12 @@ class MotionToStaticTeacher(nn.Module):
         'competition_params': fprop.MotionSegmentTarget.DEFAULT_COMP_PARAMS
     }
     STATIC_STUDENTS = ['eisen', 'thingness', 'centroid']
-    MOTION_STUDENTS = ['motion', 'boundaries', 'orientations', 'flow']
+    MOTION_STUDENTS = ['motion', 'boundary', 'flow']
     def __init__(self,
                  student_model_type='eisen',
                  downsample_factor=4,
-                 motion_resolution=4,
+                 spatial_resolution=3,
+                 motion_resolution=3,
                  motion_beta=10.0,
                  target_from_motion=False,
                  target_motion_thresh=0.5,
@@ -149,7 +150,9 @@ class MotionToStaticTeacher(nn.Module):
         super().__init__()
 
         self.downsample_factor = downsample_factor
-        self.motion_resolution, self.motion_beta = motion_resolution, motion_beta
+        self.spatial_resolution = spatial_resolution
+        self.motion_resolution = motion_resolution
+        self.motion_beta = motion_beta
         self.target_from_motion = target_from_motion
         self.target_motion_thresh = target_motion_thresh
         self.target_boundary_thresh = target_boundary_thresh
@@ -195,6 +198,7 @@ class MotionToStaticTeacher(nn.Module):
             target_from_motion=self.target_from_motion,
             build_flow_target=self.build_flow_target,
             adj_from_motion=True,
+            spatial_resolution=self.spatial_resolution,
             motion_resolution=self.motion_resolution,
             **params)
 
@@ -257,17 +261,18 @@ class MotionToStaticTeacher(nn.Module):
         if resolution is not None:
             flow_preds = targets.OpticalFlowTarget.delta_hw_to_discrete_flow(
                 flow_preds, resolution=resolution, from_xy=False, z_score=False)
-        # else:
-        #     flow_mask = (flow_preds.square().sum(1, True).sqrt() > thresh).float()
-        #     flow_preds = fprop.spatial_moments_to_circular_target(flow_preds, beta)
-        #     static = torch.cat([
-        #         torch.zeros_like(flow_preds[:,:4]),
-        #         torch.ones_like(flow_preds[:,4:5]),
-        #         torch.zeros_like(flow_preds[:,5:])], 1)
-        #     flow_preds = flow_preds * flow_mask + static * (1 - flow_mask)
 
         return (flow_preds, ups_mask)
 
+    def _postproc_target(self, target):
+        if self.student_model_type == 'motion':
+            return (target['motion'] > self.target_motion_thresh).float()
+        elif self.student_model_type == 'boundary':
+            b,c = target['boundaries'], target['orientations']
+            b = (b > self.target_boundary_thresh).float()
+            return torch.cat([b,c], 1)
+        elif self.student_model_type == 'flow':
+            return target['flow']
 
     def forward(self, img1, img2,
                 adj=None,
@@ -307,7 +312,7 @@ class MotionToStaticTeacher(nn.Module):
         elif self.student_model_type in self.STATIC_STUDENTS:
             return target
         elif self.student_model_type in self.MOTION_STUDENTS:
-            return target[self.student_model_type]
+            return self._postproc_target(target)
         else:
             raise ValueError("%s is not a valid student model" %\
                              self.student_model_type)
