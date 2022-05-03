@@ -507,11 +507,11 @@ def train(args):
                 H,W = image1.shape[-2:]
                 stride = args.teacher_downsample_factor
                 _ds = transforms.Resize([H // stride, W // stride])
-            if selfsup and not args.bootstrap and args.model.lower() in ['motion',
-                                                  'occlusion',
-                                                  'thingness',
-                                                  'boundary'
-            ]:
+            if selfsup and (not args.bootstrap) and args.model.lower() in ['motion',
+                                                                           'occlusion',
+                                                                           'thingness',
+                                                                           'boundary']:
+
                 if teacher is None:
                     _, flow = get_video(_ds(image1), _ds(image2), _ds(image0),
                                         iters=args.teacher_iters, test_mode=True)
@@ -529,7 +529,9 @@ def train(args):
             elif selfsup and args.bootstrap and (args.model.lower() in ['flow', 'motion', 'boundary']):
                 assert target_net is not None
                 flow = [image1, image2]
-
+            elif selfsup and args.model.lower() == 'flow':
+                assert target_net is not None
+                flow = [image1, image2]
             elif selfsup:
                 _, flow = teacher(_ds(image1), _ds(image2), iters=args.teacher_iters, test_mode=True)
                 # print("model", args.model, "target", flow.shape, flow.amin(), flow.amax())
@@ -544,7 +546,7 @@ def train(args):
                     boundary_iters=args.boundary_iters,
                     flow_iters=args.flow_iters
                 )
-                print("TARGET SHAPE", flow.shape, args.model.lower())
+
                 if isinstance(flow, (tuple, list)):
                     if 'combined' in args.orientation_type:
                         flow = torch.cat([flow[0], flow[1]], 1)
@@ -557,6 +559,8 @@ def train(args):
                         print("num px", valid.sum(), np.prod(list(valid.shape)))
                     else:
                         flow = flow[0]
+
+                print("TARGET SHAPE", flow.shape, args.model.lower())
                 if len(flow.shape) == 5:
                     flow = flow.squeeze(1)
 
