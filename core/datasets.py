@@ -319,8 +319,9 @@ class TdwFlowDataset(FlowDataset):
         self.get_gt_segments = get_gt_segments
 
     def transform_segments(self, x):
-        return transforms.Compose([
-            ToTensor(), RgbToIntSegments()])(x)
+        return ToTensor()(x)
+        # return transforms.Compose([
+        #     ToTensor(), RgbToIntSegments()])(x)
 
     def __len__(self):
         return len(self.train_files if not self.is_test else self.test_files)
@@ -444,7 +445,7 @@ class TdwFlowDataset(FlowDataset):
 
     def _get_objects(self, f, frame = 0):
         objects = self._get_pass(f, "objects", frame)
-        return self.transform_segments(objects)[0]
+        return self.transform_segments(objects)
 
     def _init_seed(self):
 
@@ -509,7 +510,6 @@ class TdwFlowDataset(FlowDataset):
                     torch.from_numpy(flow).permute(2, 0, 1).float() if self.get_gt_flow else {},
                     segments
             )
-
 
 
         if self.augmentor is not None:
@@ -1036,10 +1036,10 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             dataset_names=dataset_names,
             filepattern=args.filepattern or "*",
             test_filepattern=args.test_filepattern or "*9",
-            min_start_frame=6 if (args.model in ['motion', 'occlusion', 'thingness', 'boundary']) else 5,
+            min_start_frame=6 if (args.model in ['motion', 'occlusion', 'thingness', 'boundary', 'flow']) else 5,
             max_start_frame=(args.max_frame if args.max_frame > 0 else None),
             training_frames=args.training_frames,
-            get_backward_frame=((args.model in ['motion','occlusion', 'thingness', 'boundary']) and not args.supervised)
+            get_backward_frame=((args.model in ['motion','occlusion', 'thingness', 'boundary', 'flow']) and not args.supervised)
         )
 
     elif args.stage == 'tdw_png':
@@ -1054,7 +1054,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         train_dataset = MoviFlowDataset(
             root=root,
             split=args.split,
-            sequence_length=(3 if args.model in ['motion', 'boundary', 'affinity'] else 2),
+            sequence_length=(3 if args.model in ['motion', 'boundary', 'affinity', 'flow'] else 2),
             delta_time=args.flow_gap,
             passes=['images', 'objects', 'flow'],
             min_start_frame=0,

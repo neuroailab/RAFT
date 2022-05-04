@@ -99,14 +99,16 @@ class BasicMotionEncoder(nn.Module):
 class SmallUpdateBlock(nn.Module):
     def __init__(self, args, hidden_dim=96):
         super(SmallUpdateBlock, self).__init__()
+        self.args = args
         self.encoder = SmallMotionEncoder(args)
         self.gru = ConvGRU(hidden_dim=hidden_dim, input_dim=82+64)
         self.flow_head = FlowHead(hidden_dim, hidden_dim=128)
+        self.us = 4 * self.args.gate_stride
 
         self.mask = nn.Sequential(
             nn.Conv2d(hidden_dim, 256, 3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, 64*9, 1, padding=0))
+            nn.Conv2d(256, (self.us**2)*9, 1, padding=0))
 
     def forward(self, net, inp, corr, flow):
         motion_features = self.encoder(flow, corr)
@@ -125,11 +127,12 @@ class BasicUpdateBlock(nn.Module):
         self.encoder = BasicMotionEncoder(args)
         self.gru = SepConvGRU(hidden_dim=hidden_dim, input_dim=128+hidden_dim)
         self.flow_head = FlowHead(hidden_dim, hidden_dim=256)
+        self.us = 4 * self.args.gate_stride
 
         self.mask = nn.Sequential(
             nn.Conv2d(128, 256, 3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, 64*9, 1, padding=0))
+            nn.Conv2d(256, (self.us**2)*9, 1, padding=0))
 
     def forward(self, net, inp, corr, flow, upsample=True):
         motion_features = self.encoder(flow, corr)
