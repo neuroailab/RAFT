@@ -313,6 +313,8 @@ class MotionToStaticTeacher(nn.Module):
             return target
         elif self.student_model_type in self.MOTION_STUDENTS:
             return self._postproc_target(target)
+        elif self.student_model_type is None:
+            return target
         else:
             raise ValueError("%s is not a valid student model" %\
                              self.student_model_type)
