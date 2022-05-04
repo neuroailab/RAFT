@@ -129,9 +129,9 @@ class MotionToStaticTeacher(nn.Module):
     MOTION_STUDENTS = ['motion', 'boundary', 'flow']
     def __init__(self,
                  student_model_type='eisen',
-                 downsample_factor=4,
-                 spatial_resolution=3,
-                 motion_resolution=3,
+                 downsample_factor=2,
+                 spatial_resolution=4,
+                 motion_resolution=2,
                  motion_beta=10.0,
                  target_from_motion=False,
                  target_motion_thresh=0.5,
