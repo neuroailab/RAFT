@@ -175,7 +175,6 @@ class EISEN(nn.Module):
                          for i in range(B)] #[[1, H, W]]
             segments = torch.cat(cc_labels)
 
-
         return segments
 
 if __name__ == "__main__":
