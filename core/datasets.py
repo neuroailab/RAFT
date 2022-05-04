@@ -1043,7 +1043,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         )
 
     elif args.stage == 'tdw_png':
-        train_dataset = TdwPngDataset(root='/data3/honglinc/tdw_playroom_small')
+        train_dataset = TdwPngDataset(root='/data3/honglinc/tdw_playroom_small', split='test' if args.eval_only else 'training')
     elif 'movi' in args.stage:
         root = os.path.join(
             '/mnt/fs6/honglinc/dataset/tensorflow_datasets/',

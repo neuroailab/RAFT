@@ -22,10 +22,10 @@ class EISEN(nn.Module):
                  eval_full_affinity=False,
                  local_window_size=25,
                  num_affinity_samples=1024,
-                 propagation_iters=20,
+                 propagation_iters=30,
                  propagation_affinity_thresh=0.5,
                  num_masks=32,
-                 num_competition_rounds=1,
+                 num_competition_rounds=3,
     ):
         super(EISEN, self).__init__()
 
@@ -171,9 +171,10 @@ class EISEN(nn.Module):
         if not run_cc:
             segments = instance_seg
         else: # Connected component
-            cc_labels = [label_connected_component(instance_seg[i], min_area=10, ignore_idx=[0])[None]
+            cc_labels = [label_connected_component(instance_seg[i], min_area=20, ignore_idx=[0])[None]
                          for i in range(B)] #[[1, H, W]]
             segments = torch.cat(cc_labels)
+
 
         return segments
 

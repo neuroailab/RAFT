@@ -218,6 +218,78 @@ def train(args):
     return PATH
 
 
+def eval(args):
+    motion_params = {'small': False}
+    boundary_params = {
+        'small': False,
+        'static_input': False,
+        'orientation_type': 'regression'
+    }
+    motion_path = './checkpoints/15000_motion-rnd0-tdw-bs4-large-dtarg-nthr0-cthr025-pr1-tds2-fullplayall-ctd.pth'
+    boundary_path = './checkpoints/40000_boundaryStaticReg-rnd0-tdw-bs4-large-dtarg-nthr0-cthr075-pr1-tds2-fullplayall.pth'
+
+    kwargs = {
+        'teacher_class': args.teacher_class,
+        'teacher_params': {
+            'downsample_factor': 4,
+            'motion_path': motion_path,
+            'motion_model_params': motion_params,
+            'boundary_path': boundary_path,
+            'boundary_model_params': boundary_params,
+            'target_from_motion': True
+        },
+        'teacher_load_path': None,
+        'student_class': 'eisen',
+        'student_params': {},
+        'student_load_path': None,
+    }
+    for k, v in kwargs.items():
+        args.__setattr__(k, v)
+
+    model = nn.DataParallel(TeacherStudent(args), device_ids=args.gpus)
+    print("Parameter Count: %d" % count_parameters(model))
+
+    if args.restore_ckpt is not None:
+        model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
+        print('Restore checkpoint from ', args.restore_ckpt)
+
+    model.cuda()
+    model.eval()
+
+
+    val_loader, epoch_size = datasets.fetch_dataloader(args)
+
+    total_steps = 0
+
+    add_noise = True
+
+
+    avg_metric = {}
+
+    for i_batch, data_blob in enumerate(iter(val_loader)):
+
+        image1, image2, gt_segment, gt_moving, raft_moving = [x.cuda() for x in data_blob]
+
+        loss, metrics = model(image1, image2, gt_segment, iters=args.iters, raft_moving=raft_moving, get_segments=True)
+        print(i_batch, metrics)
+
+        for k, v in metrics.items():
+            if k in avg_metric.keys():
+                avg_metric[k].append(v)
+            else:
+                avg_metric[k] = [v]
+
+        if i_batch % 100 == 0:
+            for k, v in avg_metric.items():
+                print(k, np.nanmean(v), len(v))
+
+        #
+        # if i_batch > 50:
+        #     break
+
+    for k, v in avg_metric.items():
+        print(k, np.nanmean(v))
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', default='raft', help="name your experiment")
@@ -255,6 +327,7 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=str, default='teacher_student', help='Model class')
     parser.add_argument('--teacher_class', type=str, default='motion_to_static', help='Teacher class')
     parser.add_argument('--training_frames', help="a JSON file of frames to train from")
+    parser.add_argument('--eval_only', action='store_true')
 
     args = parser.parse_args()
 
@@ -264,4 +337,7 @@ if __name__ == '__main__':
     if not os.path.isdir('checkpoints'):
         os.mkdir('checkpoints')
 
-    train(args)
+    if args.eval_only:
+        eval(args)
+    else:
+        train(args)
