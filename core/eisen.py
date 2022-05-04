@@ -50,12 +50,15 @@ class EISEN(nn.Module):
         self.local_window_size = local_window_size
         self.num_affinity_samples = num_affinity_samples
         self.affinity_res = affinity_res
+        self.register_buffer("pixel_mean", torch.Tensor([123.675, 116.28, 103.53]).view(1, -1, 1, 1), False)
+        self.register_buffer("pixel_std", torch.Tensor([58.395, 57.12, 57.375]).view(1, -1, 1, 1), False)
+
 
     def forward(self, img, segment_target, get_segments=False):
         """ build outputs at multiple levels"""
 
         # Normalize inputs
-        img = 2 * (img / 255.0) - 1.0
+        img = (img - self.pixel_mean) / self.pixel_std
 
         # Backbone
         features = self.backbone(img)

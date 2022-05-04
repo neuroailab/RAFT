@@ -1,5 +1,7 @@
 from __future__ import print_function, division
 import sys
+from typing import List
+from detectron2.solver.lr_scheduler import _get_warmup_factor_at_iter
 
 sys.path.append('core')
 
@@ -19,7 +21,7 @@ from torch.utils.data import DataLoader
 from core.teacher_student import TeacherStudent
 import evaluate
 import datasets
-
+import math
 from torch.utils.tensorboard import SummaryWriter
 
 try:
@@ -46,16 +48,66 @@ MAX_FLOW = 400
 SUM_FREQ = 10
 VAL_FREQ = 5000
 
+
+class WarmupPolyLR(torch.optim.lr_scheduler._LRScheduler):
+    """
+    Poly learning rate schedule used to train DeepLab.
+    Paper: DeepLab: Semantic Image Segmentation with Deep Convolutional Nets,
+        Atrous Convolution, and Fully Connected CRFs.
+    Reference: https://github.com/tensorflow/models/blob/21b73d22f3ed05b650e85ac50849408dd36de32e/research/deeplab/utils/train_utils.py#L337  # noqa
+    """
+
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        max_iters: int,
+        warmup_factor: float = 0.001,
+        warmup_iters: int = 1000,
+        warmup_method: str = "linear",
+        last_epoch: int = -1,
+        power: float = 0.9,
+        constant_ending: float = 0.0,
+    ):
+        self.max_iters = max_iters
+        self.warmup_factor = warmup_factor
+        self.warmup_iters = warmup_iters
+        self.warmup_method = warmup_method
+        self.power = power
+        self.constant_ending = constant_ending
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self) -> List[float]:
+        warmup_factor = _get_warmup_factor_at_iter(
+            self.warmup_method, self.last_epoch, self.warmup_iters, self.warmup_factor
+        )
+        if self.constant_ending > 0 and warmup_factor == 1.0:
+            # Constant ending lr.
+            if (
+                math.pow((1.0 - self.last_epoch / self.max_iters), self.power)
+                < self.constant_ending
+            ):
+                return [base_lr * self.constant_ending for base_lr in self.base_lrs]
+        return [
+            base_lr * warmup_factor * math.pow((1.0 - self.last_epoch / self.max_iters), self.power)
+            for base_lr in self.base_lrs
+        ]
+
+    def _compute_values(self) -> List[float]:
+        # The new interface
+        return self.get_lr()
+
+
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def fetch_optimizer(args, model):
     """ Create the optimizer and learning rate scheduler """
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wdecay, eps=args.epsilon)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wdecay, eps=args.epsilon)
 
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, args.lr, args.num_steps + 100,
-                                              pct_start=0.01, cycle_momentum=False, anneal_strategy='linear')
+    # scheduler = optim.lr_scheduler.OneCycleLR(optimizer, args.lr, args.num_steps + 100,
+    #                                           pct_start=0.01, cycle_momentum=False, anneal_strategy='linear')
+    scheduler = WarmupPolyLR(optimizer=optimizer, max_iters=args.num_steps)
 
     return optimizer, scheduler
 
@@ -167,14 +219,14 @@ def train(args):
         for i_batch, data_blob in enumerate(iter(train_loader)):
             optimizer.zero_grad()
 
-            image1, image2, segment, gt_moving, raft_moving = [x.cuda() for x in data_blob]
+            image1, image2, gt_segment, gt_moving, raft_moving = [x.cuda() for x in data_blob]
 
             if args.add_noise:
                 stdv = np.random.uniform(0.0, 5.0)
                 image1 = (image1 + stdv * torch.randn(*image1.shape).cuda()).clamp(0.0, 255.0)
                 image2 = (image2 + stdv * torch.randn(*image2.shape).cuda()).clamp(0.0, 255.0)
 
-            loss, metrics = model(image1, image2, iters=args.iters, raft_moving=raft_moving)
+            loss, metrics = model(image1, image2, gt_segment=None, iters=args.iters, raft_moving=raft_moving)
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -313,7 +365,7 @@ if __name__ == '__main__':
     parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
 
     parser.add_argument('--iters', type=int, default=12)
-    parser.add_argument('--wdecay', type=float, default=.00005)
+    parser.add_argument('--wdecay', type=float, default=.0000)
     parser.add_argument('--epsilon', type=float, default=1e-8)
     parser.add_argument('--clip', type=float, default=1.0)
     parser.add_argument('--dropout', type=float, default=0.0)
