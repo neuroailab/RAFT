@@ -192,3 +192,38 @@ def local_to_sparse_global_affinity(local_adj, sample_inds, activated=None, spar
     return global_adj
 
 
+def kl_divergence(logits, labels, logits_mode='log_softmax', labels_mode='row_sum', reduce_sum=True, label_smoothing=False):
+    """
+    :param logits: [B, N, K] raw logits (pre-softmax)
+    :param labels: [B, N, K] binary labels
+    :return: [B, N] KL divergence
+    """
+    B, N, K = logits.shape
+
+    logits = logits.reshape([B * N, K])
+    labels = labels.reshape([B * N, K])
+
+    if logits_mode == 'log_softmax':
+        logits = F.log_softmax(logits, -1)       # log probabilities
+    elif logits_mode == 'log':
+        logits = logits.clamp(min=1e-9).log()
+    elif logits_mode == 'log_row_norm':
+        logits = logits / (logits.sum(-1, keepdim=True) + 1e-9)   #  probabilities
+        logits = logits.clamp(min=1e-9).log()
+    else:
+        raise ValueError
+
+    if labels_mode == 'softmax':
+        labels = torch.softmax(labels, -1)
+    else:
+        #speedup change
+        labels = labels / (labels.sum(-1, keepdim=True) + 1e-9)  #  probabilities
+
+    if label_smoothing:
+        assert not labels_mode == 'softmax'
+        alpha = 0.1
+        labels = (1 - alpha) * labels + alpha / labels.shape[-1]
+
+    kl_div = F.kl_div(logits, labels, reduction='none')
+
+    return kl_div.sum(-1) if reduce_sum else kl_div

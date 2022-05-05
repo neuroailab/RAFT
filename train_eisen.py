@@ -323,7 +323,6 @@ def eval(args):
         image1, image2, gt_segment, gt_moving, raft_moving = [x.cuda() for x in data_blob]
 
         loss, metrics = model(image1, image2, gt_segment, iters=args.iters, raft_moving=raft_moving, get_segments=True)
-        print(i_batch, metrics)
 
         for k, v in metrics.items():
             if k in avg_metric.keys():
@@ -331,7 +330,7 @@ def eval(args):
             else:
                 avg_metric[k] = [v]
 
-        if i_batch % 100 == 0:
+        if (i_batch + 1) % 50 == 0:
             for k, v in avg_metric.items():
                 print(k, np.nanmean(v), len(v))
 

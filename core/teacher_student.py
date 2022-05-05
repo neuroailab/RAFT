@@ -73,12 +73,11 @@ class TeacherStudent(nn.Module):
         # self.visualize_targets(img1, target)
         affinity, loss, pred_segment = self.student(img1, target, get_segments=get_segments)
 
+        metric = {'loss': loss.item()}
         if get_segments:
-            metric, visuals = self.measure_segments(pred_segment, gt_segment)
+            seg_metric, visuals = self.measure_segments(pred_segment, gt_segment)
             # self.visualize_segments(visuals, target, img1)
-            metric = {'miou': metric['metric_pred_segment_mean_ious']}
-        else:
-            metric = {'loss': loss}
+            metric['miou'] = seg_metric['metric_pred_segment_mean_ious'].item()
 
         return loss, metric
 

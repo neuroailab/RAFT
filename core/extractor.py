@@ -7,7 +7,7 @@ class ResidualBlock(nn.Module):
     def __init__(self, in_planes, planes, norm_fn='group', kernel_size=3, stride=1, residual=True):
         super(ResidualBlock, self).__init__()
 
-        padding = 1 if kernel_size == 3 else 0
+        padding = 'same' if kernel_size == 3 else 0
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=kernel_size, padding=padding, stride=stride)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=kernel_size, padding=padding)
         self.relu = nn.ReLU(inplace=True)
@@ -284,15 +284,15 @@ class SmallEncoder(nn.Module):
         return x
 
 class KeyQueryExtractor(nn.Module):
-    def __init__(self, input_dim, kq_dim, latent_dim, kernel_size=1, norm_fn='batch'):
+    def __init__(self, input_dim, kq_dim, latent_dim, kernel_size=3, norm_fn='batch'):
         super(KeyQueryExtractor, self).__init__()
-        self.conv = nn.Conv2d(input_dim, kq_dim, kernel_size=kernel_size, bias=True)
+        self.conv = nn.Conv2d(input_dim, kq_dim, kernel_size=kernel_size, bias=True, padding='same')
         self.key = nn.Sequential(
             ResidualBlock(kq_dim, latent_dim, norm_fn, kernel_size=kernel_size, stride=1, residual=False),
-            nn.Conv2d(latent_dim, kq_dim, kernel_size=kernel_size, bias=True, padding='same'))
+            nn.Conv2d(latent_dim, kq_dim, kernel_size=1, bias=True, padding='same'))
         self.query = nn.Sequential(
             ResidualBlock(kq_dim, latent_dim, norm_fn, kernel_size=kernel_size, stride=1, residual=False),
-            nn.Conv2d(latent_dim, kq_dim, kernel_size=kernel_size, bias=True, padding='same'))
+            nn.Conv2d(latent_dim, kq_dim, kernel_size=1, bias=True, padding='same'))
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
