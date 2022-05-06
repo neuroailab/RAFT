@@ -58,38 +58,18 @@ def dot_product_attention(queries, keys, normalize=True, eps=1e-8):
 
     return outputs
 
-class ForkedPdb(pdb.Pdb):
-    """A Pdb subclass that may be used
-    from a forked multiprocessing child
 
-    """
-    def interaction(self, *args, **kwargs):
-        _stdin = sys.stdin
-        try:
-            sys.stdin = open('/dev/stdin')
-            pdb.Pdb.interaction(self, *args, **kwargs)
-        finally:
-            sys.stdin = _stdin
-
-
-def sample_image_inds_from_probs(probs, num_points, mask, eps=1e-8):
+def sample_image_inds_from_probs(probs, num_points, eps=1e-8):
     B, H, W = probs.shape
     P = num_points
     N = H * W
 
-    try:
-        probs = probs.reshape(B, N)
-        probs = torch.maximum(probs + eps, torch.tensor(eps).to(probs)) / (probs.sum(dim=-1, keepdim=True) + eps)
-        while (probs.sum(-1) - 1).abs() > 1e-6:
-            probs = probs / (probs.sum(-1, keepdim=True)+eps)
-            # print('Problem Prob.sum:', probs.sum(), (probs.sum(-1) - 1).abs())
-            # print('---------break ------------')
-        # else:
-        #     print('Ok, Prob.sum:', probs.sum(), (probs.sum(-1) - 1).abs())
-        dist = Categorical(probs=probs)
-        indices = dist.sample([P]).permute(1, 0).to(torch.int32)  # [B,P]
-    except:
-        ForkedPdb().set_trace()
+    probs = probs.reshape(B, N)
+
+    probs = torch.maximum(probs + eps, torch.tensor(0.).to(probs)) / (probs.sum(dim=-1, keepdim=True) + eps)
+    dist = Categorical(probs=probs)
+    indices = dist.sample([P]).permute(1, 0).to(torch.int32)  # [B,P]
+
     # indices_h = torch.minimum(torch.maximum(torch.div(indices, W, rounding_mode='floor'), torch.tensor(0)), torch.tensor(H-1))
     indices_h = torch.minimum(torch.maximum(indices // W, torch.tensor(0).to(indices)), torch.tensor(H - 1).to(indices))
     indices_w = torch.minimum(torch.maximum(torch.fmod(indices, W), torch.tensor(0).to(indices)), torch.tensor(W - 1).to(indices))
@@ -136,7 +116,7 @@ def sample_coordinates_at_borders(image, num_points=16, mask=None, sum_edges=Tru
     if mask is not None:
         edges = edges * mask[:, 0]
 
-    coordinates = sample_image_inds_from_probs(edges, num_points=num_points, mask=mask)
+    coordinates = sample_image_inds_from_probs(edges, num_points=num_points)
     if normalized_coordinates:
         coordinates = coordinates.float()
         coordinates /= torch.tensor([H - 1, W - 1], dtype=torch.float32).to(coordinates)[None, None]
@@ -469,7 +449,7 @@ class Competition(nn.Module):
 
         return plateau
 
-    def forward(self, plateau, compute_mask=None):
+    def forward(self, plateau):
         """
         Find the uniform regions within the plateau map 
         by competition between visual "indices."
@@ -492,7 +472,7 @@ class Competition(nn.Module):
 
         ## sample initial indices ("agents") from borders of the plateau map
         agents = sample_coordinates_at_borders(
-            plateau.permute(0, 3, 1, 2), num_points=self.M, mask=compute_mask, sum_edges=self.sum_edges)
+            plateau.permute(0, 3, 1, 2), num_points=self.M, mask=None, sum_edges=self.sum_edges)
 
         ## initially all of these agents are "alive"
         alive = torch.ones_like(agents[..., -1:])  # [BT,M,1]
@@ -512,9 +492,6 @@ class Competition(nn.Module):
         unharvested = torch.minimum(self.reduce_func(masks_pred, dim=-1, keepdim=True), torch.tensor(1.0).to(masks_pred))
         unharvested = 1.0 - unharvested.view(self.BT, self.H, self.W, 1)
 
-        if compute_mask is not None:
-            unharvested = unharvested * compute_mask.permute(0, 2, 3, 1)
-
         for r in range(self.num_competition_rounds):
             # print("Evolution round {}".format(r + 1))
 
@@ -528,7 +505,7 @@ class Competition(nn.Module):
                 positions=agents,
                 plateau=plateau,
                 phenotypes=phenotypes,
-                availability=None)
+                availability=availability)
 
             ## kill agents that have wandered off the map
             in_bounds = torch.all(
@@ -560,9 +537,6 @@ class Competition(nn.Module):
             unharvested = torch.minimum(self.reduce_func(masks_pred * alive_t, dim=-1, keepdim=True),
                                         torch.tensor(1.0, dtype=torch.float32).to(masks_pred))
             unharvested = 1.0 - unharvested.view(self.BT, self.H, self.W, 1)
-
-            if compute_mask is not None:
-                unharvested = unharvested * compute_mask.permute(0, 2, 3, 1)
 
             ## update phenotypes of the winners
             if self.mask_thresh is not None:

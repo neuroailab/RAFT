@@ -8,7 +8,7 @@ from torch.nn import functional as F
 # from resnet import KeyQueryNetwork
 from core.resnet import ResNetFPN
 from core.extractor import KeyQueryExtractor
-from core.propagation import GraphPropagation
+
 from core.competition import Competition
 from core.utils.connected_component import label_connected_component
 import core.utils.utils as utils
@@ -22,25 +22,31 @@ class EISEN(nn.Module):
                  eval_full_affinity=False,
                  local_window_size=25,
                  num_affinity_samples=1024,
-                 propagation_iters=30,
+                 propagation_iters=40,
                  propagation_affinity_thresh=0.5,
                  num_masks=32,
                  num_competition_rounds=3,
+                 sparse=False,
+                 stem_pool=True,
     ):
         super(EISEN, self).__init__()
 
         # [Backbone encoder]
-        self.backbone = ResNetFPN(min_level=2, max_level=4)
+        self.backbone = ResNetFPN(min_level=2, max_level=4, pool=stem_pool)
         output_dim = self.backbone.output_dim
 
         # [Affinity decoder]
-        self.key_query_proj = KeyQueryExtractor(input_dim=output_dim, kq_dim=kq_dim, latent_dim=latent_dim)
+        self.key_query_proj = KeyQueryExtractor(input_dim=output_dim, kq_dim=kq_dim, latent_dim=latent_dim, downsample=False)
 
         # [Affinity sampling]
         self.sample_affinity = subsample_affinity and (not (eval_full_affinity and (not self.training)))
         self.register_buffer('local_indices', utils.generate_local_indices(img_size=affinity_res, K=local_window_size))
 
         # [Propagation]
+        if sparse:
+            from core.propagation import GraphPropagation
+        else:
+            from core.static_propagation import GraphPropagation
         self.propagation = GraphPropagation(
             num_iters=propagation_iters, adj_thresh=propagation_affinity_thresh, stop_gradient=False)
 
@@ -50,12 +56,12 @@ class EISEN(nn.Module):
         self.local_window_size = local_window_size
         self.num_affinity_samples = num_affinity_samples
         self.affinity_res = affinity_res
+        self.sparse = sparse
         self.register_buffer("pixel_mean", torch.Tensor([123.675, 116.28, 103.53]).view(1, -1, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor([58.395, 57.12, 57.375]).view(1, -1, 1, 1), False)
 
     def forward(self, img, segment_target, get_segments=False):
         """ build outputs at multiple levels"""
-
 
         # Normalize inputs
         img = (img - self.pixel_mean) / self.pixel_std
@@ -65,6 +71,8 @@ class EISEN(nn.Module):
 
         # Key & query projection
         key, query = self.key_query_proj(features)
+
+        print('key.shape: ', key.shape)
         B, C, H, W = key.shape
 
         # Sampling affinities
@@ -73,6 +81,8 @@ class EISEN(nn.Module):
         # Compute affinity logits
         affinity_logits = self.compute_affinity_logits(key, query, sample_inds)
         affinity_logits *= C ** -0.5
+
+        print('affinity.shape: ', key.shape)
 
         # Compute affinity loss
         loss = self.compute_loss(affinity_logits, sample_inds, segment_target)
@@ -151,9 +161,12 @@ class EISEN(nn.Module):
         kl_div = F.kl_div(y_pred, y_true, reduction='none') * mask
         kl_div = kl_div.sum(-1)
 
+        print('KL divergence.shape', kl_div.shape)
+
         # 4. average kl divergence aross rows with non-empty positive / negative labels
         agg_mask = (mask.sum(-1) > 0).float()
         loss = kl_div.sum() / (agg_mask.sum() + 1e-9)
+
 
         return loss
 
@@ -161,10 +174,12 @@ class EISEN(nn.Module):
         B, N, K = logits.shape
         h0 = torch.cuda.FloatTensor(B, N, hidden_dim).normal_().softmax(-1) # h0
         adj = utils.softmax_max_norm(logits) # normalize affinities
-        adj = utils.local_to_sparse_global_affinity(adj, sample_inds, sparse_transpose=True) # sparse affinity matrix
+
+        if self.sparse:
+            adj = utils.local_to_sparse_global_affinity(adj, sample_inds, sparse_transpose=True) # sparse affinity matrix
 
         # KP
-        hidden_states = self.propagation(h0.detach(), adj.detach())
+        hidden_states = self.propagation(h0.detach(), adj.detach(), sample_inds=sample_inds)
         plateau = hidden_states[-1].reshape([B, self.affinity_res[0], self.affinity_res[1], hidden_dim])
 
         # Competition
@@ -174,11 +189,34 @@ class EISEN(nn.Module):
         if not run_cc:
             segments = instance_seg
         else: # Connected component
-            cc_labels = [label_connected_component(instance_seg[i], min_area=20, ignore_idx=[0])[None]
+            cc_labels = [label_connected_component(instance_seg[i], min_area=10)[None]
                          for i in range(B)] #[[1, H, W]]
             segments = torch.cat(cc_labels)
 
         return segments
+
+    def load_checkpoint(self):
+
+        ckpt_path = '/data3/honglinc/detectron_exp_log/TDW_128_RAFT_sintel0.5_b2_single_sup_nopossym_noaspp/model_0049999.pth'
+        state_dict = torch.load(ckpt_path)['model']
+        breakpoint()
+
+        new_state_dict = self.state_dict()
+        for k, v in new_state_dict.items():
+            if 'backbone' in k:
+                new_k = 'net.student_encoders.f_single.' + k[9:]
+            elif 'key' in k or 'query' in k:
+                new_k = k.replace('key_query_proj', 'net.student_decoders.spatial_decoder.query.0.blocks.0.blocks.0.')
+            else:
+                print('Skipping: ', k)
+                continue
+
+            if new_k not in state_dict.keys():
+                print('Skipping: ', k)
+                continue
+            new_state_dict[k] = state_dict[new_k]
+
+
 
 if __name__ == "__main__":
     x = torch.randn([1, 3, 512, 512]).cuda()

@@ -13,12 +13,69 @@ from detectron2.modeling.backbone.resnet import (
     DeformBottleneckBlock,
     ResNet,
 )
-from detectron2.projects.deeplab.resnet import DeepLabStem
+
 import torch.nn as nn
 import torch
 
 
-def build_resnet_deeplab_backbone():
+class DeepLabStem(CNNBlockBase):
+    """
+    The DeepLab ResNet stem (layers before the first residual block).
+    """
+
+    def __init__(self, in_channels=3, out_channels=128, max_pool=True, norm="BN"):
+        """
+        Args:
+            norm (str or callable): norm after the first conv layer.
+                See :func:`layers.get_norm` for supported format.
+        """
+        super().__init__(in_channels, out_channels, 4)
+        self.in_channels = in_channels
+        self.conv1 = Conv2d(
+            in_channels,
+            out_channels // 2,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            bias=False,
+            norm=get_norm(norm, out_channels // 2),
+        )
+        self.conv2 = Conv2d(
+            out_channels // 2,
+            out_channels // 2,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
+            norm=get_norm(norm, out_channels // 2),
+        )
+        self.conv3 = Conv2d(
+            out_channels // 2,
+            out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
+            norm=get_norm(norm, out_channels),
+        )
+        weight_init.c2_msra_fill(self.conv1)
+        weight_init.c2_msra_fill(self.conv2)
+        weight_init.c2_msra_fill(self.conv3)
+        self.max_pool = max_pool
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = F.relu_(x)
+        x = self.conv2(x)
+        x = F.relu_(x)
+        x = self.conv3(x)
+        x = F.relu_(x)
+        if self.max_pool:
+            x = F.max_pool2d(x, kernel_size=3, stride=2, padding=1)
+        return x
+
+
+def build_resnet_deeplab_backbone(pool):
     """
     Create a ResNet instance from config.
     Returns:
@@ -59,7 +116,8 @@ def build_resnet_deeplab_backbone():
         stem = DeepLabStem(
             in_channels=input_shape.channels,
             out_channels=in_channels,
-            norm=norm
+            norm=norm,
+            max_pool=pool
         )
     else:
         raise ValueError("Unknown stem type: {}".format(stem_type))
@@ -115,7 +173,7 @@ def build_resnet_deeplab_backbone():
 
 
 class ResNetFPN(nn.Module):
-    def __init__(self, min_level, max_level, channels={2: 256, 3: 512, 4: 1024}, latent_dim=512):
+    def __init__(self, min_level, max_level, channels={2: 256, 3: 512, 4: 1024}, latent_dim=512, pool=True):
         super(ResNetFPN, self).__init__()
 
         self.levels = list(range(min_level, max_level + 1))
@@ -123,7 +181,7 @@ class ResNetFPN(nn.Module):
         self.max_level = max_level
 
         # Backbone
-        self.backbone = build_resnet_deeplab_backbone()
+        self.backbone = build_resnet_deeplab_backbone(pool=pool)
 
         # lateral conv for multi-level features concatenation
         for level in self.levels:

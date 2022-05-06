@@ -11,22 +11,13 @@ def reorder_int_labels(x):
     return y
 
 
-def label_connected_component(labels, min_area=20, topk=256, ignore_idx=None):
+def label_connected_component(labels, min_area=20, topk=256):
     size = labels.size()
     assert len(size) == 2
     max_area = size[0] * size[1] - 1
 
     # per-label binary mask
     unique_labels = torch.unique(labels).reshape(-1, 1, 1)  # [?, 1, 1], where ? is the number of unique id
-    if ignore_idx is not None:
-        label_list = []
-        for i in unique_labels:
-            if i not in ignore_idx:
-                label_list.append(i)
-        unique_labels = torch.tensor(label_list).to(unique_labels).reshape(-1, 1, 1)
-        if unique_labels.shape[0] == 0:
-            return labels
-
     binary_masks = (labels.unsqueeze(0) == unique_labels).float()  # [?, H, W]
 
     # label connected components

@@ -46,7 +46,7 @@ except:
 
 MAX_FLOW = 400
 SUM_FREQ = 10
-VAL_FREQ = 5000
+VAL_FREQ = 2000
 
 
 class WarmupPolyLR(torch.optim.lr_scheduler._LRScheduler):
@@ -286,6 +286,7 @@ def eval(args):
 
     avg_metric = {}
 
+    start = time.time()
     for i_batch, data_blob in enumerate(iter(val_loader)):
 
         image1, image2, gt_segment, gt_moving, raft_moving = [x.cuda() for x in data_blob]
@@ -298,9 +299,9 @@ def eval(args):
             else:
                 avg_metric[k] = [v]
 
-        if (i_batch + 1) % 50 == 0:
+        if (i_batch + 1) % 5 == 0:
             for k, v in avg_metric.items():
-                print(k, np.nanmean(v), len(v))
+                print(k, np.nanmean(v), len(v), (time.time() - start) / i_batch)
 
         #
         # if i_batch > 50:
@@ -360,11 +361,18 @@ def get_model_args(args):
         'motion_model_params': motion_model_params,
         'boundary_model_params': boundary_model_params
     }
+
     student_params = {}
     if 'tdw' in args.stage:
         student_params['affinity_res'] = [128, 128]
     else:
         student_params['affinity_res'] = [64, 64]
+
+    student_params['stem_pool'] = args.stem_pool
+
+    if not args.stem_pool:
+        student_params['affinity_res'] = [128, 128]
+
     kwargs = {
         'teacher_class': args.teacher_class,
         'teacher_params': teacher_params,
@@ -413,6 +421,7 @@ if __name__ == '__main__':
     parser.add_argument('--teacher_class', type=str, default='motion_to_static', help='Teacher class')
     parser.add_argument('--training_frames', help="a JSON file of frames to train from")
     parser.add_argument('--eval_only', action='store_true')
+    parser.add_argument('--stem_pool', type=int, default=1, help="whether to pool in the backbone stem")
 
     args = parser.parse_args()
 
