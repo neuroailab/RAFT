@@ -163,30 +163,9 @@ class Logger:
 
 
 def train(args):
-    motion_params = {'small': False}
-    boundary_params = {
-        'small': False,
-        'static_input': False,
-        'orientation_type': 'regression'
-    }
-    motion_path = './checkpoints/15000_motion-rnd0-tdw-bs4-large-dtarg-nthr0-cthr025-pr1-tds2-fullplayall-ctd.pth'
-    boundary_path = './checkpoints/40000_boundaryStaticReg-rnd0-tdw-bs4-large-dtarg-nthr0-cthr075-pr1-tds2-fullplayall.pth'
 
-    kwargs = {
-        'teacher_class': args.teacher_class,
-        'teacher_params': {
-            'downsample_factor': 4,
-            'motion_path': motion_path,
-            'motion_model_params': motion_params,
-            'boundary_path': boundary_path,
-            'boundary_model_params': boundary_params,
-            'target_from_motion': True
-        },
-        'teacher_load_path': None,
-        'student_class': 'eisen',
-        'student_params': {},
-        'student_load_path': None,
-    }
+    kwargs = get_model_args(args)
+
     for k, v in kwargs.items():
         args.__setattr__(k, v)
 
@@ -216,7 +195,19 @@ def train(args):
     epoch = 0
     while should_keep_training:
         epoch += 1
-        for i_batch, data_blob in enumerate(iter(train_loader)):
+        for i_batch in range(epoch_size // args.batch_size):
+            import time
+            t1 = time.time()
+            try:
+                data_blob = iter(train_loader).next()
+            except StopIteration:
+                train_loader.dataset.reset_iterator()
+                data_blob = iter(train_loader).next()
+            except Exception as e:
+                print("skipping step %d due to %s" % (total_steps, e))
+                total_steps += 1
+                continue
+
             optimizer.zero_grad()
 
             image1, image2, gt_segment, gt_moving, raft_moving = [x.cuda() for x in data_blob]
@@ -271,30 +262,8 @@ def train(args):
 
 
 def eval(args):
-    motion_params = {'small': False}
-    boundary_params = {
-        'small': False,
-        'static_input': False,
-        'orientation_type': 'regression'
-    }
-    motion_path = './checkpoints/15000_motion-rnd0-tdw-bs4-large-dtarg-nthr0-cthr025-pr1-tds2-fullplayall-ctd.pth'
-    boundary_path = './checkpoints/40000_boundaryStaticReg-rnd0-tdw-bs4-large-dtarg-nthr0-cthr075-pr1-tds2-fullplayall.pth'
+    kwargs = get_model_args(args)
 
-    kwargs = {
-        'teacher_class': args.teacher_class,
-        'teacher_params': {
-            'downsample_factor': 4,
-            'motion_path': motion_path,
-            'motion_model_params': motion_params,
-            'boundary_path': boundary_path,
-            'boundary_model_params': boundary_params,
-            'target_from_motion': True
-        },
-        'teacher_load_path': None,
-        'student_class': 'eisen',
-        'student_params': {},
-        'student_load_path': None,
-    }
     for k, v in kwargs.items():
         args.__setattr__(k, v)
 
@@ -307,7 +276,6 @@ def eval(args):
 
     model.cuda()
     model.eval()
-
 
     val_loader, epoch_size = datasets.fetch_dataloader(args)
 
@@ -340,6 +308,72 @@ def eval(args):
 
     for k, v in avg_metric.items():
         print(k, np.nanmean(v))
+
+
+def get_model_args(args):
+    # [Params 1]
+    # motion_params = {'small': False}
+    # boundary_params = {
+    #     'small': False,
+    #     'static_input': False,
+    #     'orientation_type': 'regression'
+    # }
+    # motion_path = './checkpoints/15000_motion-rnd0-tdw-bs4-large-dtarg-nthr0-cthr025-pr1-tds2-fullplayall-ctd.pth'
+    # boundary_path = './checkpoints/40000_boundaryStaticReg-rnd0-tdw-bs4-large-dtarg-nthr0-cthr075-pr1-tds2-fullplayall.pth'
+
+    # teacher_params = {
+    #     'downsample_factor': 4,
+    #     'motion_path': motion_path,
+    #     'motion_model_params': motion_params,
+    #     'boundary_path': boundary_path,
+    #     'boundary_model_params': boundary_params,
+    #     'target_from_motion': True
+    # }
+
+    # [Params 2]
+    m_path = './checkpoints/72500_motion-rnd1-movi_d-bs2-large-mt05-bt05-flit24-gs1-pretrained-0.pth'
+    b_path = './checkpoints/72500_boundaryMotionReg-rnd1-movi_d-bs2-small-mt05-bt05-flit24-gs1-pretrained-0.pth'
+    f_path = './checkpoints/62500_flowBoundary-rnd1-movi_d-bs2-large-mt05-bt01-flit24-gs1-pretrained-0.pth'
+
+    motion_model_params = {
+        'small': 'small' in m_path,
+        'gate_stride': 2 if ('gs1' not in m_path) else 1
+    }
+    boundary_model_params = {
+        'small': 'small' in b_path,
+        'static_input': 'Static' in b_path,
+        'orientation_type': 'regression',
+        'gate_stride': 2 if ('gs1' not in b_path) else 1
+    }
+
+    teacher_params = {
+        'student_model_type': None,
+        'downsample_factor': 2,
+        'spatial_resolution': 4,
+        'motion_resolution': 2,
+        'target_from_motion': False,
+        'return_intermediates': True,
+        'build_flow_target': True,
+        'motion_path': m_path,
+        'boundary_path': b_path,
+        'flow_path': f_path,
+        'motion_model_params': motion_model_params,
+        'boundary_model_params': boundary_model_params
+    }
+    student_params = {}
+    if 'tdw' in args.stage:
+        student_params['affinity_res'] = [128, 128]
+    else:
+        student_params['affinity_res'] = [64, 64]
+    kwargs = {
+        'teacher_class': args.teacher_class,
+        'teacher_params': teacher_params,
+        'teacher_load_path': None,
+        'student_class': 'eisen',
+        'student_params': student_params,
+        'student_load_path': None,
+    }
+    return kwargs
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

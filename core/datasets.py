@@ -27,7 +27,7 @@ from utils.augmentor import FlowAugmentor, SparseFlowAugmentor
 #                                         get_robot_names)
 # from dorsalventral.data.davis import (DavisDataset,
 #                                       get_dataset_names)
-# from dorsalventral.data.movi import MoviDataset
+from dorsalventral.data.movi import MoviDataset
 from dorsalventral.data.utils import ToTensor, RgbToIntSegments
 
 import kornia.color
@@ -908,39 +908,39 @@ class TdwAffinityDataset(torch.utils.data.Dataset):
 
         return raw_segment_map, segment_map, gt_moving
 
-# class MoviFlowDataset(MoviDataset):
-#
-#     def __init__(self,
-#                  root,
-#                  split='train',
-#                  sequence_length=3,
-#                  passes=["images", "objects", "flow"],
-#                  *args, **kwargs):
-#         super().__init__(dataset_dir=root,
-#                          split=split,
-#                          sequence_length=sequence_length,
-#                          passes=passes,
-#                          *args, **kwargs)
-#
-#         self.is_test = ('train' not in self.split)
-#
-#     def __getitem__(self, idx):
-#         data = super().__getitem__(idx)
-#         video = data['images'].float()
-#         img1, img2 = video[-2], video[-1] # index and forward frames
-#         img0 = None
-#         if video.shape[0] == 3:
-#             img0 = video[0]
-#         elif self.is_test and (img0 is None):
-#             minv, maxv = self.meta['forward_flow_range']
-#             img0 = data['flow'][-2] / 65535 * (maxv - minv) + minv
-#
-#         segments = data.get('objects', None)
-#         if segments is not None:
-#             segments = segments[-2] # index frame
-#
-#         return (img1, img2, img0, segments)
-#
+class MoviFlowDataset(MoviDataset):
+
+    def __init__(self,
+                 root,
+                 split='train',
+                 sequence_length=3,
+                 passes=["images", "objects", "flow"],
+                 *args, **kwargs):
+        super().__init__(dataset_dir=root,
+                         split=split,
+                         sequence_length=sequence_length,
+                         passes=passes,
+                         *args, **kwargs)
+
+        self.is_test = ('train' not in self.split)
+
+    def __getitem__(self, idx):
+        data = super().__getitem__(idx)
+        video = data['images'].float()
+        img1, img2 = video[-2], video[-1] # index and forward frames
+        img0 = None
+        if video.shape[0] == 3:
+            img0 = video[0]
+        elif self.is_test and (img0 is None):
+            minv, maxv = self.meta['forward_flow_range']
+            img0 = data['flow'][-2] / 65535 * (maxv - minv) + minv
+
+        segments = data.get('objects', None)
+        if segments is not None:
+            segments = segments[-2] # index frame
+
+        return (img1, img2, segments, torch.tensor(0.), torch.tensor(0.))
+
 # class RobonetFlowDataset(RobonetDataset):
 #
 #     all_robots = get_robot_names()
@@ -1046,7 +1046,8 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         train_dataset = TdwPngDataset(root='/data3/honglinc/tdw_playroom_small', split='test' if args.eval_only else 'training')
     elif 'movi' in args.stage:
         root = os.path.join(
-            '/mnt/fs6/honglinc/dataset/tensorflow_datasets/',
+            # '/mnt/fs6/honglinc/dataset/tensorflow_datasets/',
+            '/data2/honglinc/',
             args.stage,
             '256x256' if args.image_size[0] > 128 else '128x128',
             '1.0.0'

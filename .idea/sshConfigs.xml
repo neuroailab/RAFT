@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="SshConfigs">
+    <configs>
+      <sshConfig authType="PASSWORD" connectionConfig="{&quot;serverAliveInterval&quot;:300}" host="localhost" id="15c5284f-6f62-489d-9390-18dcb36b2745" port="22" customName="node3-ccn2" nameFormat="CUSTOM" useOpenSSHConfig="true">
+        <option name="customName" value="node3-ccn2" />
+      </sshConfig>
+    </configs>
+  </component>
+</project>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="16eb6a0b-9c3e-4565-a260-472acb66dac3" name="node6-ccn2">
+        <fileTransfer accessType="SFTP" host="node6-ccn2cluster.stanford.edu" port="22" sshConfigId="9fa9ac7a-3f3b-49ad-baf3-a1cb4be95cc9" sshConfig="node6-ccn2">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="84e0f9fd-4355-4ff7-baec-c0902a9e7dae" name="node1-ccn2">
+        <fileTransfer accessType="SFTP" host="node1-ccn2cluster.stanford.edu" port="22" sshConfigId="c4d92e30-db32-460a-a37c-e75affbdc970" sshConfig="node1-ccn2">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+    <groups>
+      <group>
+        <name>CCN</name>
+        <servers>
+          <name value="node6-ccn2" />
+          <name value="node1-ccn2" />
+        </servers>
+      </group>
+    </groups>
+  </component>
+</project>

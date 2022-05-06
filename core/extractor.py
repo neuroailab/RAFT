@@ -7,7 +7,7 @@ class ResidualBlock(nn.Module):
     def __init__(self, in_planes, planes, norm_fn='group', kernel_size=3, stride=1, residual=True):
         super(ResidualBlock, self).__init__()
 
-        padding = 'same' if kernel_size == 3 else 0
+        padding = 1 if kernel_size == 3 else 0
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=kernel_size, padding=padding, stride=stride)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=kernel_size, padding=padding)
         self.relu = nn.ReLU(inplace=True)

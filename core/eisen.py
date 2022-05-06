@@ -53,9 +53,9 @@ class EISEN(nn.Module):
         self.register_buffer("pixel_mean", torch.Tensor([123.675, 116.28, 103.53]).view(1, -1, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor([58.395, 57.12, 57.375]).view(1, -1, 1, 1), False)
 
-
     def forward(self, img, segment_target, get_segments=False):
         """ build outputs at multiple levels"""
+
 
         # Normalize inputs
         img = (img - self.pixel_mean) / self.pixel_std
@@ -137,29 +137,23 @@ class EISEN(nn.Module):
         else:
             samples = segment_targets.permute(0, 2, 1)
         targets = segment_targets == samples
+        null_mask = (segment_targets == 0) # & (samples == 0)  only mask the rows
+        mask = 1 - null_mask.float()
 
-        loss = utils.kl_divergence(logits, targets)
-        mask = segment_targets.reshape(loss.shape)
-        loss = (loss * mask).sum() / (mask.sum() + 1e-9)
+        # 1. compute log softmax on the logits (F.kl_div requires log prob for pred)
+        y_pred = utils.weighted_softmax(logits, mask)
+        y_pred = torch.log(y_pred.clamp(min=1e-8))  # log softmax
 
-        # null_mask = (segment_targets == 0) # & (samples == 0)  only mask the rows
-        # mask = 1 - null_mask.float()
-        #
-        # # 1. compute log softmax on the logits (F.kl_div requires log prob for pred)
-        # # y_pred = utils.weighted_softmax(logits, mask)
-        # # y_pred = torch.log(y_pred.clamp(min=1e-8))  # log softmax
-        # y_pred = F.log_softmax(logits, -1)
-        #
-        # # 2. compute the target probabilities (F.kl_div requires prob for target)
-        # y_true = targets / (torch.sum(targets, -1, keepdim=True) + 1e-9)
-        #
-        # # 3. compute kl divergence
-        # kl_div = F.kl_div(y_pred, y_true, reduction='none') * mask
-        # kl_div = kl_div.sum(-1)
-        #
-        # # 4. average kl divergence aross rows with non-empty positive / negative labels
-        # agg_mask = (mask.sum(-1) > 0).float()
-        # loss = kl_div.sum() / (agg_mask.sum() + 1e-9)
+        # 2. compute the target probabilities (F.kl_div requires prob for target)
+        y_true = targets / (torch.sum(targets, -1, keepdim=True) + 1e-9)
+
+        # 3. compute kl divergence
+        kl_div = F.kl_div(y_pred, y_true, reduction='none') * mask
+        kl_div = kl_div.sum(-1)
+
+        # 4. average kl divergence aross rows with non-empty positive / negative labels
+        agg_mask = (mask.sum(-1) > 0).float()
+        loss = kl_div.sum() / (agg_mask.sum() + 1e-9)
 
         return loss
 

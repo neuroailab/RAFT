@@ -55,7 +55,7 @@ def load_model(model_class, load_path, freeze, **kwargs):
 class TeacherStudent(nn.Module):
     def __init__(self, args):
         super().__init__()
-        assert args.teacher_class in ['raft_pretrained', 'motion_to_static'], f"Unexpected teacher class {args.teacher_class}"
+        assert args.teacher_class in ['raft_pretrained', 'motion_to_static', 'motion_to_static_v1'], f"Unexpected teacher class {args.teacher_class}"
         print('Teacher class: ', args.teacher_class)
         self.teacher = load_model(args.teacher_class, args.teacher_load_path, freeze=True, **args.teacher_params)
         self.student = load_model(args.student_class, args.student_load_path, freeze=False, **args.student_params)
@@ -65,6 +65,13 @@ class TeacherStudent(nn.Module):
 
         if self.args.teacher_class == 'raft_pretrained':
             target = raft_moving
+        elif self.args.teacher_class == 'motion_to_static_v1':
+            motion_thresh = boundary_thresh = 0.5
+            self.teacher.target_model.motion_thresh = motion_thresh
+            self.teacher.target_model.boundary_thresh = boundary_thresh
+            target = self.teacher(img1, img2, flow_iters=24, bootstrap=True)['target']
+
+            print('target.size: ', target.shape)
         else:
             self.teacher.eval()
             with torch.no_grad():
@@ -139,10 +146,10 @@ class TeacherStudent(nn.Module):
     @staticmethod
     def visualize_targets(img, seg):
         plt.subplot(1, 2, 1)
-        plt.imshow(img[0].permute(1, 2, 0).cpu())
+        plt.imshow(img[0].permute(1, 2, 0).cpu() / 255.)
         plt.axis('off')
         plt.subplot(1, 2, 2)
-        plt.imshow(seg[0].cpu())
+        plt.imshow(seg[0].cpu(), cmap='twilight')
         plt.axis('off')
         plt.show()
         plt.close()
