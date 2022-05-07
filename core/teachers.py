@@ -277,6 +277,7 @@ class MotionToStaticTeacher(nn.Module):
     def forward(self, img1, img2,
                 adj=None,
                 bootstrap=True,
+                run_kp=True,
                 *args, **kwargs):
 
         motion, m_ups_mask = self.get_motion_preds(
@@ -297,7 +298,8 @@ class MotionToStaticTeacher(nn.Module):
             orientations=orientations,
             flow=flow,
             adj=adj,
-            bootstrap=bootstrap
+            bootstrap=bootstrap,
+            run_kp=run_kp
         )
         if self.return_intermediates:
             static_target, motion_targets = target
@@ -454,6 +456,10 @@ class BipartiteBootNet(nn.Module):
                  dynamic_params={},
                  static_path=None,
                  static_params={},
+                 centroid_path=None,
+                 centroid_params={},
+                 boot_paths={'flow_path': None},
+                 boot_params={},
                  parse_paths=True,
                  input_normalization=None,
                  downsample_factor=2,
@@ -477,16 +483,17 @@ class BipartiteBootNet(nn.Module):
             random_dimensions
         )
 
+        ## load models
+        self._load_models(
+            boot_paths=boot_paths, boot_params=boot_params,
+            dynamic_path=dynamic_path, dynamic_params=dynamic_params,
+            static_path=static_path, static_params=static_params,
+            centroid_path=centroid_path, centroid_params=centroid_params
+        )
+
         ## how to slice input video and do spacetime grouping + tracking
         self.T_group = grouping_window
         self.T_track = tracking_step_size
-
-    def _load_dynamic_model(self):
-        pass
-    def _load_static_model(self):
-        pass
-    def _load_boot_model(self):
-        pass
 
     def _set_plateau_dimensions(
             self,
@@ -504,6 +511,115 @@ class BipartiteBootNet(nn.Module):
 
         print("Plateau map dimensions: [stat %d, dyn %d, rand %d]" %\
               (self.Q_static, self.Q_dynamic, self.Q_random))
+
+    def _load_models(self,
+                     b_path, b_params,
+                     d_path, d_params,
+                     s_path, s_params,
+                     c_path, c_params):
+        self._load_boot_model(b_path, **b_params)
+        self._load_dynamic_model(d_path, **d_params)
+        self._load_static_model(s_path, **s_params)
+        self._load_centroid_model(c_path, **c_params)
+
+
+    def _load_boot_model(self, paths, **params):
+        self.boot_model = MotionToStaticTeacher(
+            student_model_type=None,
+            motion_path=paths.get('motion_path', None),
+            boundary_path=paths.get('boundary_path', None),
+            flow_path=paths.get('flow_path', None),
+            downsample_factor=self.downsample_factor,
+            spatial_resolution=self.static_resolution,
+            motion_resolution=self.dynamic_resolution,
+            target_from_motion=False,
+            build_flow_target=True,
+            parse_paths=self.parse_paths,
+            **params
+        ) if (paths is not None) else None
+
+    def _load_dynamic_model(self, path, params):
+
+        ## defaults to boot model if there's no path to restore from
+        if path is None:
+            self.dynamic_model = self.boot_model
+            self._dynamic_is_boot_model = True
+        else:
+            self.dynamic_model = load_model(path,
+                                            model_class='flow',
+                                            parse_path=self.parse_paths,
+                                            **params)
+            self._dynamic_is_boot_model = False
+
+    def _load_static_model(self, path, params):
+        if path is not None:
+            raise NotImplementedError("Need method for loading EISEN")
+        self.static_model = None
+
+    def _load_centroid_model(self, path, params):
+        if path is not None:
+            raise NotImplementedError("Need method for loading centroid model")
+        self.centroid_model = None
+
+    @staticmethod
+    def get_affinity_preds(net, img1, nonlinearity=None):
+        if net is None
+            return None
+        else:
+            raise NotImplementedError("Need to get affinities")
+
+    @staticmethod
+    def get_centroid_preds(net, img1, nonlinearity=None):
+        if net is None:
+            return None
+        else:
+            raise NotImplementedError("Need to get centroids")
+
+    @staticmethod
+    def get_temporal_preds(net, img1, img2, bootstrap=True, **kwargs):
+        if net is None:
+            return (None, None)
+
+        if isinstance(net, MotionToStaticTeacher):
+            print("using a bootnet to predict flow")
+            net.target_model.target_type = 'motion'
+            net.return_intermediates = False
+            net.student_model_type = 'flow'
+
+        flow_fwd = net(img1, img2, bootstrap=bootstrap, **kwargs)
+        flow_bck = net(img2, img1, bootstrap=bootstrap, **kwargs)
+
+        print("flow fwd", flow_fwd.shape)
+        print("flow bck", flow_bck.shape)
+
+        return (flow_fwd, flow_bck)
+
+    @staticmethod
+    def get_boot_preds(net, img1, img2,
+                       bootstrap=True,
+                       get_backward_flow=False,
+                       **kwargs):
+        if net is None:
+            return (None, None, None, None)
+
+        assert isinstance(net, MotionToStaticTeacher), type(net).__name__
+        net.target_model.target_type = 'motion_static'
+        net.return_intermediates = False
+        net.student_model_type = None
+
+        h0, adj, activated, flow_fwd = net(img1, img2,
+                                           bootstrap=bootstrap,
+                                           run_kp=False,
+                                           **kwargs)
+
+        flow_bck = None
+        if get_backward_flow:
+            net.target_model.target_type = 'motion'
+            net.return_intermediates = False
+            net.student_model_type = 'flow'
+            flow_bck = net(img2, img1, bootstrap=bootstrap, **kwargs)
+
+        return (h0, adj, activated, flow_fwd, flow_bck)
 
     def _set_shapes(self,
                     video,
@@ -567,29 +683,62 @@ class BipartiteBootNet(nn.Module):
         if T == 1: # only adj_static
             assert self._static_model is not None
             return (
-                self.static_model(video[:,0], **static_params),
-                self.centroid_model(video[:,0], **centroid_params),
+                self.get_affinity_preds(video[:,0], **static_params),
+                self.get_centroid_preds(video[:,0], **centroid_params),
                 None,
                 None
             )
 
-        for t in range(T-1):
+        adj = flow = h0 = activated = []
+        for t in range(T-1): # for each frame pair
             img1, img2 = video[:,t], video[:,t+1]
 
             ## per-image outputs
-            adj_space = self.static_model(img1, **static_params)
-            h0_space = self.centroid_model(img1, **centroid_params)
+            adj_space_t = self.get_affinity_preds(
+                self.static_model, img1, **static_params)
+            h0_space_t = self.get_centroid_preds(
+                self.centroid_model, img1, **centroid_params)
 
             ## per image-pair outputs
-            flow_fwd, flow_bck = self.dynamic_model(img1, img2, **dynamic_params)
-            flow = torch.cat([flow_fwd, flow_bck], -3)
+            if (adj_space_t is None): # use bootnet to get all SKP inputs
+                boot_preds = self.get_boot_preds(
+                    self.boot_model, img1, img2,
+                    get_backward_flow=True,
+                    **boot_params)
+                h0_t, adj_space_t, activated_t, flow_fwd, flow_bck = boot_preds
+                flow_t1t2 = torch.stack([flow_fwd, flow_bck], -1)
+            else: # use a separate dynamic model to get the temporal SKP inputs
+                flow_fwd, flow_bck = self.get_temporal_preds(
+                    self.dynamic_model, img1, img2, **dynamic_params)
+                flow_t1t2 = torch.stack([flow_fwd, flow_bck], -1)
+                raise NotImplementedError("build h0 and activated")
 
-            if (adj_space is None):
-                adj_space, h0 = self.boot_model(img1, img2, **boot_params)
+            adj.append(adj_space_t)
+            h0.append(h0_t)
+            flow.append(flow_t1t2)
+            activated.append(activated_t)
 
+            ## last frame
+            if (t+1) == (T-1):
+                if self.static_model is not None:
+                    adj.append(self.get_affinity_preds(
+                        self.static_model, img2, **static_params))
+                    raise NotImplementedError("Build h0 and activated for last frame")
+                else: # use backward predictions from boot model
+                    h0_t, adj_space_t, activated_t = self.get_boot_preds(
+                        self.boot_model, img2, img1,
+                        get_backward_flow=False,
+                        **boot_params)[:3]
+                    adj.append(adj_space_t)
+                    h0.append(h0_t)
+                    activated.append(activated_t)
 
+        adj = torch.stack(adj, 1)
+        h0 = torch.stack(h0, 1)
+        flow = torch.stack(flow, 1)
+        activated = torch.stack(activated, 1)
 
-
+        return (h0, adj, activated, flow)
 
     def forward(self, video,
                 stride=None,
@@ -630,8 +779,10 @@ class BipartiteBootNet(nn.Module):
         for window_idx, (ts, te) in enumerate(self.temporal_slices):
             print(window_idx, (ts, te))
             if window_idx == 0:
-                plateau, groups = self.compute_initial_grouping_inputs(
+                skp_inputs = self.compute_initial_grouping_inputs(
                     video[:,ts:te])
+                for i,v in enumerate(skp_inputs):
+                    print(i, v.shape)
             else:
                 ## tracking, etc.
                 pass
