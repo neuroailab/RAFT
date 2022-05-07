@@ -451,6 +451,16 @@ class FuturePredictionTeacher(nn.Module):
 class BipartiteBootNet(nn.Module):
     """
     """
+    DEFAULT_BOOT_PARAMS = {
+        'student_model_type': None,
+        'target_model_params': MotionToStaticTeacher.DEFAULT_TARGET_PARAMS,
+        'target_motion_thresh': 0.5,
+        'target_boundary_thresh': 0.5
+    }
+    DEFAULT_GROUPING_PARAMS = {
+    }
+    DEFAULT_GROUPING_PARAMS = {
+    }
     def __init__(self,
                  dynamic_path=None,
                  dynamic_params={},
@@ -459,8 +469,10 @@ class BipartiteBootNet(nn.Module):
                  centroid_path=None,
                  centroid_params={},
                  boot_paths={'flow_path': None},
-                 boot_params={},
                  parse_paths=True,
+                 boot_params=DEFAULT_BOOT_PARAMS,
+                 grouping_params=DEFAULT_GROUPING_PARAMS,
+                 tracking_params=DEFAULT_TRACKING_PARAMS,
                  input_normalization=None,
                  downsample_factor=2,
                  static_resolution=4,
@@ -492,6 +504,8 @@ class BipartiteBootNet(nn.Module):
         )
 
         ## how to slice input video and do spacetime grouping + tracking
+        self.Group = self._build_grouping_model(grouping_params)
+        self.Track = self._build_tracking_model(tracking_params)
         self.T_group = grouping_window
         self.T_track = tracking_step_size
 
