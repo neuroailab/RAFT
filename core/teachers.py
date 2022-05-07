@@ -446,6 +446,198 @@ class FuturePredictionTeacher(nn.Module):
         boundary_mask = (boundaries[:,0] > self.target_boundary_thresh).float()
         return (target, interior_mask, boundary_mask)
 
+class BipartiteBootNet(nn.Module):
+    """
+    """
+    def __init__(self,
+                 dynamic_path=None,
+                 dynamic_params={},
+                 static_path=None,
+                 static_params={},
+                 parse_paths=True,
+                 input_normalization=None,
+                 downsample_factor=2,
+                 static_resolution=4,
+                 dynamic_resolution=2,
+                 random_dimensions=0,
+                 grouping_window=2,
+                 tracking_step_size=1
+    ):
+        super().__init__()
+        self.parse_paths = parse_paths
+
+        ## preprocessing and downsampling
+        self.downsample_factor = self.stride = downsample_factor
+        self.input_normalization = input_normalization or nn.Identity()
+
+        ## dimensions for plateau map
+        self._set_plateau_dimensions(
+            static_resolution,
+            dynamic_resolution,
+            random_dimensions
+        )
+
+        ## how to slice input video and do spacetime grouping + tracking
+        self.T_group = grouping_window
+        self.T_track = tracking_step_size
+
+    def _load_dynamic_model(self):
+        pass
+    def _load_static_model(self):
+        pass
+    def _load_boot_model(self):
+        pass
+
+    def _set_plateau_dimensions(
+            self,
+            static_res=None,
+            dynamic_res=None,
+            random_dims=None
+    ):
+        self.static_resolution = static_res or 0
+        self.dynamic_reslution = dynamic_res or 0
+        self.Q_random = random_dims or 0
+
+        self.Q_static = static_res**2
+        self.Q_dynamic = dynamic_res**2
+        self.Q = self.Q_static + self.Q_dynamic + self.Q_random
+
+        print("Plateau map dimensions: [stat %d, dyn %d, rand %d]" %\
+              (self.Q_static, self.Q_dynamic, self.Q_random))
+
+    def _set_shapes(self,
+                    video,
+                    grouping_window=None,
+                    tracking_step_size=None,
+                    stride=None
+    ):
+        if stride is not None:
+            self.stride = self.downsample_factor = stride
+        if grouping_window is not None:
+            self.T_group = grouping_window
+        if tracking_step_size is not None:
+            self.T_track = tracking_step_size
+
+        shape = video.shape
+        self.B, self.T, _ , self.H_in, self.W_in = shape
+        self.is_static = (self.T == 1)
+        self.BT = self.B*self.T
+        self._T = self.T - 1
+        self._BT = self.B*self._T
+        self.H, self.W = [self.H_in // self.stride, self.W_in // self.stride]
+        self.size = [self.H, self.W]
+        self.size_in = [self.H_in, self.W_in]
+
+        assert self.T >= self.T_group, \
+            "Input video must be at least length of a grouping window, but" +\
+            "T_video = %d and T_group = %d" % (self.T, self.T_group)
+
+        assert self.T_track <= self.T_group, (self.T_track, self.T_group)
+
+    def _normalize(self, video):
+
+        if video.dtype == torch.uint8:
+            video = video.float()
+
+        return self.input_normalization(video)
+
+    def _compute_temporal_slices(self):
+
+        self.temporal_slices = [
+            [t, t+self.T_group] for t in range(0, self.T, self.T_track)
+        ]
+
+    def compute_initial_grouping_inputs(
+            self,
+            video,
+            static_params={},
+            dynamic_params={},
+            boot_params={},
+            centroid_params={}
+    ):
+        """
+        Pass each pair of frames into the proper networks to compute
+        spatial affinities, temporal affinities, and KP init.
+
+        Then run SpacetimeKP to get a plateau map tensor and Competition
+        to get the actual groups and the quantities needed to initialize
+        the next window and track objects.
+        """
+        T = video.shape[1] # could be less than T_group for last window
+        if T == 1: # only adj_static
+            assert self._static_model is not None
+            return (
+                self.static_model(video[:,0], **static_params),
+                self.centroid_model(video[:,0], **centroid_params),
+                None,
+                None
+            )
+
+        for t in range(T-1):
+            img1, img2 = video[:,t], video[:,t+1]
+
+            ## per-image outputs
+            adj_space = self.static_model(img1, **static_params)
+            h0_space = self.centroid_model(img1, **centroid_params)
+
+            ## per image-pair outputs
+            flow_fwd, flow_bck = self.dynamic_model(img1, img2, **dynamic_params)
+            flow = torch.cat([flow_fwd, flow_bck], -3)
+
+            if (adj_space is None):
+                adj_space, h0 = self.boot_model(img1, img2, **boot_params)
+
+
+
+
+
+    def forward(self, video,
+                stride=None,
+                grouping_window=None,
+                tracking_step_size=None):
+        """
+        From an RGB video of shape [B,T,3,Hin,Win], computes:
+
+        - Spatial affinities
+            - local affinities [B,T,Ks,H,W] where Ks = (2*radius_spatial+1)**2
+            - [global affinities] [B,T,HW,HW] from which global affinities can be sampled
+
+        - Temporal Affinities (equivalent to optical flow) [B,T-1,2Kt,H,W],
+              where factor of 2 is for backward temporal affinities
+
+        - [Spacetime plateau map initialization] [B,T,Q_static + Q_dynamic + Q_random,H,W]
+              where Q_static, Q_dynamic, and Q_random are dimensions that depend on a pixel's
+              predicted object centroid, motion direction, and random states, respectively
+
+        - [Spacetime plateau map activations] [B,T,1,H,W]
+              a set of points at which to initialize KP
+
+        In a mature BBNet, the spatial affinities are predicted by a per-frame model (EISEN)
+        and the temporal affinities are predicted by a video model (RAFT).
+
+        However, during the initial "boot-up" phase of development, the spatial affinities
+        (and other KP inputs) are provided by a pretrained BootNet, which operates on
+        dynamic scenes and attempts to group based on motion and oriented boundaries.
+
+        The above representations are fed as inputs into SpacetimeKP and a Competition-based
+        tracking module, which together produce a visual group tensor of shape [B,T,H,W] <int>
+        """
+        self._set_shapes(video, grouping_window, tracking_step_size, stride)
+        video = self._normalize(video)
+
+        ## figure out slice indices for video clips
+        self._compute_temporal_slices()
+        for window_idx, (ts, te) in enumerate(self.temporal_slices):
+            print(window_idx, (ts, te))
+            if window_idx == 0:
+                plateau, groups = self.compute_initial_grouping_inputs(
+                    video[:,ts:te])
+            else:
+                ## tracking, etc.
+                pass
+
+
+
 class KpPrior(nn.Module):
     def __init__(self,
                  centroid_model,
@@ -571,17 +763,21 @@ if __name__ == '__main__':
         'orientation_type': 'regression'
     }
 
-    target_net = nn.DataParallel(MotionToStaticTeacher(
-        downsample_factor=4,
-        motion_path=args.motion_path,
-        motion_model_params=motion_params,
-        boundary_path=args.boundary_path,
-        boundary_model_params=boundary_params
-    ), device_ids=args.gpus)
-    target_net.eval()
+    # target_net = nn.DataParallel(MotionToStaticTeacher(
+    #     downsample_factor=4,
+    #     motion_path=args.motion_path,
+    #     motion_model_params=motion_params,
+    #     boundary_path=args.boundary_path,
+    #     boundary_model_params=boundary_params
+    # ), device_ids=args.gpus)
+    # target_net.eval()
 
-    for i in range(100):
-        img1 = torch.rand((1,3,512,512))
-        img2 = torch.rand((1,3,512,512))
-        target = target_net(img1.cuda(), img2.cuda())
-        print(target.shape, target.dtype, torch.unique(target))
+    bbnet = BipartiteBootNet().cuda()
+    video = torch.rand(1,8,3,256,256) * 255.0
+    out = bbnet(video)
+
+    # for i in range(100):
+    #     img1 = torch.rand((1,3,512,512))
+    #     img2 = torch.rand((1,3,512,512))
+    #     target = target_net(img1.cuda(), img2.cuda())
+    #     print(target.shape, target.dtype, torch.unique(target))
