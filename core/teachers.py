@@ -799,10 +799,15 @@ class BipartiteBootNet(nn.Module):
 
         ## run competition at the midpoint of the group
         t_comp = T // 2
-        print("t comp", t_comp)
         masks_t, positions_t, alive_t, pointers_t = self.Track(
             plateau[:,t_comp:t_comp+1])[:4]
         segments_t = masks_t.argmax(-1)
+
+        self.tracked_objects = {
+            'positions': positions_t,
+            'pointers': pointers_t,
+            'alive': alive_t
+        }
 
         segments = [segments_t]
         if t_comp > 0:
@@ -850,6 +855,50 @@ class BipartiteBootNet(nn.Module):
         ], 1)
         return h0_overlap
 
+    def group_tracked_inputs(self,
+                             segments_prev,
+                             h0,
+                             adj,
+                             activated,
+                             fwd_flow,
+                             bck_flow,
+                             motion_mask):
+
+
+        B,T = h0.shape[:2]
+        T_overlap = T - self.T_track
+        T_new = T - T_overlap
+
+        ## all nodes in the overlapping time slices are already activated
+        activated = torch.cat([
+            torch.ones_like(activated[:,:T_overlap]),
+            activated[:,T_overlap:]], 1)
+
+        plateau_new = self.Group(
+            *[x.detach() for x in [
+                h0, adj, activated, fwd_flow, bck_flow, motion_mask]])
+
+        if motion_mask is not None:
+            motion = motion_mask[:,:,0,:,:,None]
+            _plateau_new = torch.cat([plateau_new * motion, 1 - motion], -1)
+        else:
+            _plateau_new = plateau_new
+
+        self.Track.num_competition_rounds = 0
+        segments_new = self.Track(
+            _plateau_new[:,T_overlap:],
+            agents=self.tracked_objects['positions'].repeat(1,T_new,1,1),
+            alive=self.tracked_objects['alive'].repeat(1,T_new,1,1),
+            phenotypes=self.tracked_objects['pointers'].repeat(1,T_new,1,1),
+            compete=False)[0].argmax(-1)
+
+        self.Track.num_competition_rounds = self.num_competition_rounds
+        segments = torch.cat([
+            segments_prev[:,-T_overlap:], segments_new], 1)
+        print("next segments", segments.shape)
+        print("new segments", segments_new.shape)
+
+        return plateau_new, segments, segments_new
 
     def forward(self, video,
                 stride=None,
@@ -900,15 +949,18 @@ class BipartiteBootNet(nn.Module):
                 print("plateau", plateau.shape)
                 segments = self.compute_initial_segments(plateau, motion_mask)
                 print("segments", segments.shape, segments.dtype)
+                full_segments = [segments]
             else: ## use tracking from previous groups
                 h0_new = grp_inputs[0]
                 h0_overlap = self.compute_overlap_h0(
                     plateau, segments, h0_new)
-                print("h0 overlap", h0_overlap.shape)
-                print("h0", grp_inputs[0].shape)
+                plateau, segments, segments_new = self.group_tracked_inputs(
+                    segments, h0_overlap, *grp_inputs[1:])
+                full_segments.append(segments_new)
 
-        return (grp_inputs, plateau, segments, h0_overlap)
+        full_segments = torch.cat(full_segments, 1)
 
+        return (grp_inputs, plateau, segments, full_segments)
 class KpPrior(nn.Module):
     def __init__(self,
                  centroid_model,
