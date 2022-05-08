@@ -698,10 +698,11 @@ class BipartiteBootNet(nn.Module):
     def _compute_temporal_slices(self):
 
         self.temporal_slices = [
-            [t, t+self.T_group] for t in range(0, self.T, self.T_track)
+            [t, t+self.T_group] for t in range(0, self.T - 1, self.T_track)
         ]
+        print("temporal slices", self.temporal_slices)
 
-    def compute_initial_grouping_inputs(
+    def compute_grouping_inputs(
             self,
             video,
             static_params={},
@@ -830,6 +831,26 @@ class BipartiteBootNet(nn.Module):
         self.Track.num_competition_rounds = self.num_competition_rounds
         return segments
 
+    def compute_overlap_h0(self, plateau, segments, h0_new):
+        T_prev, T_new = plateau.shape[1], h0_new.shape[1]
+        T_overlap = T_prev - self.T_track
+        plateau = plateau[:,-T_overlap:].view(-1, *plateau.shape[2:])
+        segments = segments[:,-T_overlap].view(-1, *segments.shape[2:])
+        masks = F.one_hot(segments, num_classes=segments.amax().item()+1).float()
+        alive = masks.amax((1,2))[...,None]
+
+        plateau_flat, _ =  fprop.ObjectTracker.flatten_plateau_with_masks(
+            plateau, masks, alive, flatten_masks=False
+
+        )
+        plateau_flat = plateau_flat.view(-1, T_overlap, *plateau_flat.shape[1:])
+        h0_overlap = torch.cat([
+            plateau_flat.permute(0,1,4,2,3),
+            h0_new[:,T_overlap:]
+        ], 1)
+        return h0_overlap
+
+
     def forward(self, video,
                 stride=None,
                 grouping_window=None,
@@ -866,23 +887,27 @@ class BipartiteBootNet(nn.Module):
 
         ## figure out slice indices for video clips
         self._compute_temporal_slices()
+        h0_overlap = None
         for window_idx, (ts, te) in enumerate(self.temporal_slices):
             print(window_idx, (ts, te))
+            grp_inputs = self.compute_grouping_inputs(
+                video[:,ts:te])
+            motion_mask = grp_inputs[-1]
+            for i,v in enumerate(grp_inputs):
+                print(i, v.shape)
             if window_idx == 0:
-                skp_inputs = self.compute_initial_grouping_inputs(
-                    video[:,ts:te])
-                for i,v in enumerate(skp_inputs):
-                    print(i, v.shape)
-                motion_mask = skp_inputs[-1]
-                plateau = self.Group(*[x.detach() for x in skp_inputs])
+                plateau = self.Group(*[x.detach() for x in grp_inputs])
                 print("plateau", plateau.shape)
                 segments = self.compute_initial_segments(plateau, motion_mask)
                 print("segments", segments.shape, segments.dtype)
-            else:
-                ## tracking, etc.
-                pass
+            else: ## use tracking from previous groups
+                h0_new = grp_inputs[0]
+                h0_overlap = self.compute_overlap_h0(
+                    plateau, segments, h0_new)
+                print("h0 overlap", h0_overlap.shape)
+                print("h0", grp_inputs[0].shape)
 
-        return (skp_inputs, plateau, segments)
+        return (grp_inputs, plateau, segments, h0_overlap)
 
 class KpPrior(nn.Module):
     def __init__(self,
