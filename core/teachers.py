@@ -466,7 +466,8 @@ class BipartiteBootNet(nn.Module):
     DEFAULT_TRACKING_PARAMS = {
         'num_masks': 32,
         'compete_thresh': 0.2,
-        'num_competition_rounds': 2
+        'num_competition_rounds': 2,
+        'selection_strength': 0
     }
     def __init__(self,
                  dynamic_path=None,
@@ -522,17 +523,17 @@ class BipartiteBootNet(nn.Module):
             dynamic_res=None,
             random_dims=None
     ):
-        self.static_resolution = static_res or 0
-        self.dynamic_resolution = dynamic_res or 0
+        self.static_resolution = static_res
+        self.dynamic_resolution = dynamic_res
         self.Q_random = random_dims or 0
 
-        self.Q_static = static_res**2
-        self.Q_dynamic = dynamic_res**2
-        self.Q = self.Q_static + self.Q_dynamic + self.Q_random
+        self.Q_static = (static_res**2) if static_res else None
+        self.Q_dynamic = (dynamic_res**2) if dynamic_res else None
+        self.Q = (self.Q_static or 1) * (self.Q_dynamic or 1) + self.Q_random
 
         print("Plateau map dimensions: [stat %d, dyn %d, rand %d, total %d]" %\
-              (self.Q_static, self.Q_dynamic, self.Q_random,
-               self.Q_static * self.Q_dynamic + self.Q_random))
+              (self.Q_static or 0, self.Q_dynamic or 0, self.Q_random, self.Q))
+
 
     def _load_models(self,
                      boot_paths, boot_params,
@@ -698,7 +699,7 @@ class BipartiteBootNet(nn.Module):
     def _compute_temporal_slices(self):
 
         self.temporal_slices = [
-            [t, t+self.T_group] for t in range(0, self.T - 1, self.T_track)
+            [t, t+self.T_group] for t in range(0, self.T - self.T_group + 1, self.T_track)
         ]
         print("temporal slices", self.temporal_slices)
 
@@ -884,19 +885,20 @@ class BipartiteBootNet(nn.Module):
         else:
             _plateau_new = plateau_new
 
-        self.Track.num_competition_rounds = 0
+        self.Track.num_competition_rounds = 1
         segments_new = self.Track(
             _plateau_new[:,T_overlap:],
             agents=self.tracked_objects['positions'].repeat(1,T_new,1,1),
             alive=self.tracked_objects['alive'].repeat(1,T_new,1,1),
             phenotypes=self.tracked_objects['pointers'].repeat(1,T_new,1,1),
-            compete=False)[0].argmax(-1)
+            compete=False,
+            update_pointers=True,
+            yoke_phenotypes_to_agents=False,
+            noise=0)[0].argmax(-1)
 
         self.Track.num_competition_rounds = self.num_competition_rounds
         segments = torch.cat([
             segments_prev[:,-T_overlap:], segments_new], 1)
-        print("next segments", segments.shape)
-        print("new segments", segments_new.shape)
 
         return plateau_new, segments, segments_new
 
@@ -942,13 +944,9 @@ class BipartiteBootNet(nn.Module):
             grp_inputs = self.compute_grouping_inputs(
                 video[:,ts:te])
             motion_mask = grp_inputs[-1]
-            for i,v in enumerate(grp_inputs):
-                print(i, v.shape)
             if window_idx == 0:
                 plateau = self.Group(*[x.detach() for x in grp_inputs])
-                print("plateau", plateau.shape)
                 segments = self.compute_initial_segments(plateau, motion_mask)
-                print("segments", segments.shape, segments.dtype)
                 full_segments = [segments]
             else: ## use tracking from previous groups
                 h0_new = grp_inputs[0]
