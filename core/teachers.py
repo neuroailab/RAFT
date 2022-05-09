@@ -464,10 +464,7 @@ class GroundTruthGroupingTeacher(nn.Module):
 
     def forward(self, segments, stride=None):
 
-        print("GT Segments", segments.shape)
-
         static = False
-        print("STRIDE", self.stride)
         if len(segments.shape) == 4:
             static = True
             segments = segments.unsqueeze(1)
@@ -792,7 +789,6 @@ class BipartiteBootNet(nn.Module):
                 self.centroid_model, img1, **centroid_params)
 
             ## per image-pair outputs
-            print("ADJ SPACE", adj_space_t.shape)
             if (self._dynamic_is_boot_model): # use bootnet to get all SKP inputs
                 boot_preds = self.get_boot_preds(
                     self.boot_model, img1, img2,
@@ -820,7 +816,6 @@ class BipartiteBootNet(nn.Module):
                     self.static_model,
                     *_s_inp(t+1),
                     **static_params)
-                print("adj space t", adj_space_t.shape)
 
                 boot_preds = self.get_boot_preds(
                     self.boot_model, img2, img1,
@@ -934,7 +929,9 @@ class BipartiteBootNet(nn.Module):
 
         plateau_new = self.Group(
             *[x.detach() for x in [
-                h0, adj, activated, fwd_flow, bck_flow, motion_mask]])
+                h0, adj, activated, fwd_flow, bck_flow]],
+            motion_mask.detach() if motion_mask is not None else None
+        )
 
         if motion_mask is not None:
             motion = motion_mask[:,:,0,:,:,None]
@@ -1029,8 +1026,10 @@ class BipartiteBootNet(nn.Module):
             print(window_idx, (ts, te))
             grp_inputs = self.compute_grouping_inputs(
                 self._get_all_inputs(video, ts, te))
-            motion_mask = grp_inputs[-1]
-            print("spatial adj", grp_inputs[1].shape)
+            if self.static_model is not None:
+                motion_mask = None
+            else:
+                motion_mask = grp_inputs[-1]
             if window_idx == 0:
                 plateau = self.Group(*[x.detach() for x in grp_inputs])
                 segments = self.compute_initial_segments(plateau, motion_mask)
@@ -1040,7 +1039,7 @@ class BipartiteBootNet(nn.Module):
                 h0_overlap = self.compute_overlap_h0(
                     plateau, segments, h0_new)
                 plateau, segments, segments_new = self.group_tracked_inputs(
-                    segments, h0_overlap, *grp_inputs[1:])
+                    segments, h0_overlap, *grp_inputs[1:-1], motion_mask)
                 full_segments.append(segments_new)
 
         full_segments = torch.cat(full_segments, 1)
