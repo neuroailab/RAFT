@@ -504,6 +504,7 @@ class BipartiteBootNet(nn.Module):
         'selection_strength': 0
     }
     def __init__(self,
+                 training_mode='motion_to_static',
                  input_keys=DEFAULT_INPUTS,
                  dynamic_path=None,
                  dynamic_params={},
@@ -552,6 +553,16 @@ class BipartiteBootNet(nn.Module):
         self.Track = self.build_tracking_model(tracking_params)
         self.T_group = grouping_window
         self.T_track = tracking_step_size
+
+        ## how to output a training target
+        self.training_mode = training_mode
+
+    @property
+    def training_mode(self):
+        return self._training_mode
+    @training_mode.setter
+    def training_mode(self, mode):
+        self._training_mode = mode
 
     def _set_plateau_dimensions(
             self,
@@ -1045,6 +1056,7 @@ class BipartiteBootNet(nn.Module):
         full_segments = torch.cat(full_segments, 1)
 
         return (grp_inputs, plateau, segments, full_segments)
+
 class KpPrior(nn.Module):
     def __init__(self,
                  centroid_model,
