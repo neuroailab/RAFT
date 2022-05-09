@@ -450,9 +450,46 @@ class FuturePredictionTeacher(nn.Module):
         boundary_mask = (boundaries[:,0] > self.target_boundary_thresh).float()
         return (target, interior_mask, boundary_mask)
 
+class GroundTruthGroupingTeacher(nn.Module):
+
+    def __init__(self,
+                 downsample_factor=2,
+                 radius=7):
+
+        super().__init__()
+        self.downsample_factor = self.stride = downsample_factor
+        self.radius = self.r = radius
+        self.k = 2*self.r + 1
+        self.K = self.k**2
+
+    def forward(self, segments, stride=None):
+
+        print("GT Segments", segments.shape)
+
+        static = False
+        print("STRIDE", self.stride)
+        if len(segments.shape) == 4:
+            static = True
+            segments = segments.unsqueeze(1)
+        else:
+            assert len(segments.shape) == 5, segments.shape
+        assert segments.shape[2] == 1, segments.shape # single channel
+        if stride is not None:
+            self.stride = stride
+        segments = segments[...,::self.stride,::self.stride]
+        neighbors = fprop.get_local_neighbors(
+            segments[:,:,0], radius=self.r, to_image=True) # [B,T,K,H,W]
+        adj = (segments == neighbors).float()
+        if static:
+            adj = adj[:,0]
+        return adj
+
 class BipartiteBootNet(nn.Module):
     """
     """
+    DEFAULT_INPUTS = {
+        k:'images' for k in ['static', 'centroid', 'dynamic', 'boot']}
+
     DEFAULT_BOOT_PARAMS = {
         'target_model_params': MotionToStaticTeacher.DEFAULT_TARGET_PARAMS,
         'target_motion_thresh': 0.5,
@@ -470,6 +507,7 @@ class BipartiteBootNet(nn.Module):
         'selection_strength': 0
     }
     def __init__(self,
+                 input_keys=DEFAULT_INPUTS,
                  dynamic_path=None,
                  dynamic_params={},
                  static_path=None,
@@ -493,6 +531,7 @@ class BipartiteBootNet(nn.Module):
         self.parse_paths = parse_paths
 
         ## preprocessing and downsampling
+        self.input_keys = input_keys
         self.downsample_factor = self.stride = downsample_factor
         self.input_normalization = input_normalization or nn.Identity()
 
@@ -574,9 +613,15 @@ class BipartiteBootNet(nn.Module):
             self._dynamic_is_boot_model = False
 
     def _load_static_model(self, path, params):
-        if path is not None:
+        if path == 'ground_truth':
+            print("USING GT AFFINITIES, downsample %d" % self.downsample_factor)
+            self.static_model = GroundTruthGroupingTeacher(
+                downsample_factor=self.downsample_factor,
+                **params)
+        elif path is not None:
             raise NotImplementedError("Need method for loading EISEN")
-        self.static_model = None
+        else:
+            self.static_model = None
 
     def _load_centroid_model(self, path, params):
         if path is not None:
@@ -594,11 +639,11 @@ class BipartiteBootNet(nn.Module):
         return tracker
 
     @staticmethod
-    def get_affinity_preds(net, img1, nonlinearity=None):
+    def get_affinity_preds(net, img1, nonlinearity=None, **kwargs):
         if net is None:
             return None
         else:
-            raise NotImplementedError("Need to get affinities")
+            return (nonlinearity or nn.Identity())(net(img1, **kwargs))
 
     @staticmethod
     def get_centroid_preds(net, img1, nonlinearity=None):
@@ -719,7 +764,10 @@ class BipartiteBootNet(nn.Module):
         to get the actual groups and the quantities needed to initialize
         the next window and track objects.
         """
-        T = video.shape[1] # could be less than T_group for last window
+        T = self._get_video(video).shape[1] # could be less than T_group for last window
+        _s_inp = lambda t: self._get_frames(video, t, 1, 'static')
+        _b_inp = lambda t: self._get_frames(video, t, 2, 'boot')
+
         if T == 1: # only adj_static
             assert self._static_model is not None
             return (
@@ -733,22 +781,27 @@ class BipartiteBootNet(nn.Module):
 
         h0, adj, activated, flow_fwd, flow_bck, motion = [], [], [], [], [], []
         for t in range(T-1): # for each frame pair
-            img1, img2 = video[:,t], video[:,t+1]
+            img1, img2 = _b_inp(t)
 
             ## per-image outputs
             adj_space_t = self.get_affinity_preds(
-                self.static_model, img1, **static_params)
+                self.static_model,
+                *_s_inp(t),
+                **static_params)
             h0_space_t = self.get_centroid_preds(
                 self.centroid_model, img1, **centroid_params)
 
             ## per image-pair outputs
-            if (adj_space_t is None): # use bootnet to get all SKP inputs
+            print("ADJ SPACE", adj_space_t.shape)
+            if (self._dynamic_is_boot_model): # use bootnet to get all SKP inputs
                 boot_preds = self.get_boot_preds(
                     self.boot_model, img1, img2,
                     get_backward_flow=True,
                     **boot_params)
-                h0_t, adj_space_t, activated_t = boot_preds[:3]
+                h0_t, adj_space_t_boot, activated_t = boot_preds[:3]
                 flow_fwd_t, flow_bck_t, motion_fwd_t = boot_preds[3:6]
+                if adj_space_t is None:
+                    adj_space_t = adj_space_t_boot
             else: # use a separate dynamic model to get the temporal SKP inputs
                 flow_fwd_t, flow_bck_t = self.get_temporal_preds(
                     self.dynamic_model, img1, img2, **dynamic_params)
@@ -763,20 +816,24 @@ class BipartiteBootNet(nn.Module):
 
             ## last frame
             if (t+1) == (T-1):
-                if self.static_model is not None:
-                    adj.append(self.get_affinity_preds(
-                        self.static_model, img2, **static_params))
-                    raise NotImplementedError("Build h0 and activated for last frame")
-                else: # use backward predictions from boot model
-                    boot_preds = self.get_boot_preds(
-                        self.boot_model, img2, img1,
-                        get_backward_flow=False,
-                        **boot_params)
-                    h0_t, adj_space_t, activated_t, _, _, motion_bck_t = boot_preds
-                    h0.append(h0_t)
-                    adj.append(adj_space_t)
-                    activated.append(activated_t)
-                    motion.append(motion_bck_t)
+                adj_space_t = self.get_affinity_preds(
+                    self.static_model,
+                    *_s_inp(t+1),
+                    **static_params)
+                print("adj space t", adj_space_t.shape)
+
+                boot_preds = self.get_boot_preds(
+                    self.boot_model, img2, img1,
+                    get_backward_flow=False,
+                    **boot_params)
+                h0_t, adj_space_t_boot, activated_t, _, _, motion_bck_t = boot_preds
+                if adj_space_t is None:
+                    adj_space_t = adj_space_t_boot
+
+                h0.append(h0_t)
+                adj.append(adj_space_t)
+                activated.append(activated_t)
+                motion.append(motion_bck_t)
 
         adj = torch.stack(adj, 1)
         h0 = torch.stack(h0, 1)
@@ -902,6 +959,30 @@ class BipartiteBootNet(nn.Module):
 
         return plateau_new, segments, segments_new
 
+    def _get_video(self, video, img_key='images'):
+        if hasattr(video, 'keys'):
+            return video[img_key]
+        else:
+            assert isinstance(video, torch.Tensor)
+            return video
+
+    def _get_input(self, video, model_key='boot'):
+        if hasattr(video, 'keys'):
+            k = self.input_keys.get(model_key, 'images')
+            if k != 'images':
+                print("WARNING! USING %s AS INPUT, COULD BE GT" % k)
+            return video[k]
+        else:
+            assert isinstance(video, torch.Tensor)
+            return video
+
+    def _get_all_inputs(self, video, tstart, tend):
+        return {k:video[k][:,tstart:tend] for k in video.keys()}
+
+    def _get_frames(self, video, frame, length=2, model_key='boot'):
+        return torch.unbind(
+            self._get_input(video, model_key)[:,frame:frame+length], 1)
+
     def forward(self, video,
                 stride=None,
                 grouping_window=None,
@@ -933,8 +1014,13 @@ class BipartiteBootNet(nn.Module):
         The above representations are fed as inputs into SpacetimeKP and a Competition-based
         tracking module, which together produce a visual group tensor of shape [B,T,H,W] <int>
         """
-        self._set_shapes(video, grouping_window, tracking_step_size, stride)
-        video = self._normalize(video)
+        self._set_shapes(self._get_video(video),
+                         grouping_window,
+                         tracking_step_size,
+                         stride)
+        if not hasattr(video, 'keys'):
+            video = {'images': video}
+        video['images'] = self._normalize(video['images'])
 
         ## figure out slice indices for video clips
         self._compute_temporal_slices()
@@ -942,8 +1028,9 @@ class BipartiteBootNet(nn.Module):
         for window_idx, (ts, te) in enumerate(self.temporal_slices):
             print(window_idx, (ts, te))
             grp_inputs = self.compute_grouping_inputs(
-                video[:,ts:te])
+                self._get_all_inputs(video, ts, te))
             motion_mask = grp_inputs[-1]
+            print("spatial adj", grp_inputs[1].shape)
             if window_idx == 0:
                 plateau = self.Group(*[x.detach() for x in grp_inputs])
                 segments = self.compute_initial_segments(plateau, motion_mask)
