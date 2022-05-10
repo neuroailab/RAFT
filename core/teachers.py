@@ -14,6 +14,8 @@ from raft import (RAFT,
                   MotionClassifier,
                   BoundaryClassifier)
 
+# from eisen import EISEN
+
 import dorsalventral.models.layers as layers
 import dorsalventral.models.targets as targets
 import dorsalventral.models.fire_propagation as fprop
@@ -449,6 +451,75 @@ class FuturePredictionTeacher(nn.Module):
         target = target * (motion[:,0] > self.target_motion_thresh).float() * interior_mask
         boundary_mask = (boundaries[:,0] > self.target_boundary_thresh).float()
         return (target, interior_mask, boundary_mask)
+
+class StaticToMotionTeacher(nn.Module):
+    """
+    Compute centroid features from a set of tracked segments
+    and create an optical flow target from them.
+    """
+    DEFAULT_CENTROID_PARAMS = {
+    }
+    DEFAULT_TARGET_PARAMS = {
+        'warp_radius': 3,
+        'warp_dilation': 1,
+        'normalize_features': False,
+        'patch_radius': 1,
+        'error_func': 'sum',
+        'distance_func': None,
+        'target_type': 'regression',
+        'beta': 10.0
+    }
+    def __init__(self,
+                 target_motion_thresh=0.5,
+                 centroid_model_params=DEFAULT_CENTROID_PARAMS,
+                 target_model_params=DEFAULT_TARGET_PARAMS,
+                 *args,
+                 **kwargs):
+        super().__init__()
+        self.target_motion_thresh = target_motion_thresh
+        self.centroid_target = self._build_centroid_target(
+            copy.deepcopy(centroid_model_params))
+
+        self.future_target = self._build_future_target(
+            copy.deepcopy(target_model_params))
+
+    def _build_centroid_target(self, params):
+        return targets.CentroidTarget(
+            compute_offsets=True,
+            normalize=True,
+            scale_to_px=True,
+            thresh=0.5,
+            **params)
+
+    def _build_future_target(self, params):
+        return targets.FuturePredictionTarget(**params)
+
+    def _segments_to_masks(self, segments):
+
+        ## do some filtering here
+
+        M = segments.amax().item() + 1
+        B,T,H,W = segments.shape
+        masks = F.one_hot(segments, num_classes=M)
+        masks = masks.view(B*T,H,W,M).permute(0,3,1,2).float()
+
+        self.B, self.T, self.H, self.W = B,T,H,W
+        self.BT = self.B*self.T
+        return masks
+
+    def forward(self, segments, motion):
+        assert len(segments.shape) == 4, segments.shape
+        assert segments.shape[1] == 2, segments.shape # two frames
+        masks = self._segments_to_masks(segments)
+        target, loss_mask = self.centroid_target(masks)
+        target = target * loss_mask[:,:,None]
+        if motion is not None:
+            target = target * motion.view(self.BT,1,1,self.H,self.W)
+        target = target.sum(1).view(self.B,self.T,-1,self.H,self.W)
+        target, _ = self.future_target(target)
+        if motion is not None:
+            target = target * motion[:,0:1]
+        return target
 
 class GroundTruthGroupingTeacher(nn.Module):
 
@@ -994,7 +1065,9 @@ class BipartiteBootNet(nn.Module):
     def forward(self, video,
                 stride=None,
                 grouping_window=None,
-                tracking_step_size=None):
+                tracking_step_size=None,
+                **kwargs
+    ):
         """
         From an RGB video of shape [B,T,3,Hin,Win], computes:
 
@@ -1036,7 +1109,7 @@ class BipartiteBootNet(nn.Module):
         for window_idx, (ts, te) in enumerate(self.temporal_slices):
             print(window_idx, (ts, te))
             grp_inputs = self.compute_grouping_inputs(
-                self._get_all_inputs(video, ts, te))
+                self._get_all_inputs(video, ts, te), **kwargs)
             if self.static_model is not None:
                 motion_mask = None
             else:
