@@ -14,7 +14,7 @@ from core.utils.connected_component import label_connected_component
 import core.utils.utils as utils
 
 class EISEN(nn.Module):
-    def __init__(self,
+    def __init__(self, args,
                  affinity_res=[128, 128],
                  kq_dim=32,
                  latent_dim=64,
