@@ -458,24 +458,27 @@ class StaticToMotionTeacher(nn.Module):
     and create an optical flow target from them.
     """
     DEFAULT_CENTROID_PARAMS = {
+        'local_radius': 4
     }
     DEFAULT_TARGET_PARAMS = {
         'warp_radius': 3,
         'warp_dilation': 1,
         'normalize_features': False,
-        'patch_radius': 1,
-        'error_func': 'sum',
+        'patch_radius': 0,
+        'error_func': None,
         'distance_func': None,
         'target_type': 'regression',
-        'beta': 10.0
+        'beta': 1.0
     }
     def __init__(self,
+                 local_strides=None,
                  target_motion_thresh=0.5,
                  centroid_model_params=DEFAULT_CENTROID_PARAMS,
                  target_model_params=DEFAULT_TARGET_PARAMS,
                  *args,
                  **kwargs):
         super().__init__()
+        self.local_strides = local_strides or []
         self.target_motion_thresh = target_motion_thresh
         self.centroid_target = self._build_centroid_target(
             copy.deepcopy(centroid_model_params))
@@ -485,9 +488,11 @@ class StaticToMotionTeacher(nn.Module):
 
     def _build_centroid_target(self, params):
         return targets.CentroidTarget(
+            local_strides=self.local_strides, # if not [], global centroid
             compute_offsets=True,
             normalize=True,
             scale_to_px=True,
+            return_masks=True,
             thresh=0.5,
             **params)
 
@@ -511,11 +516,19 @@ class StaticToMotionTeacher(nn.Module):
         assert len(segments.shape) == 4, segments.shape
         assert segments.shape[1] == 2, segments.shape # two frames
         masks = self._segments_to_masks(segments)
-        target, loss_mask = self.centroid_target(masks)
-        target = target * loss_mask[:,:,None]
         if motion is not None:
-            target = target * motion.view(self.BT,1,1,self.H,self.W)
-        target = target.sum(1).view(self.B,self.T,-1,self.H,self.W)
+            motion_mask = motion.view(self.BT,1,1,self.H,self.W)
+        else:
+            motion_mask = torch.ones((1,1,1,1,1)).to(masks.device)
+        target, loss_mask = self.centroid_target(masks * motion_mask[:,0])
+        if len(self.centroid_target.local_strides):
+            target = target * motion_mask[:,0]
+            target = target.view(self.B, self.T, len(self.local_strides)*2, *target.shape[-2:])
+        else:
+            target = target * loss_mask[:,:,None]
+            if motion is not None:
+                target = target * motion_mask
+            target = target.sum(1).view(self.B,self.T,-1,self.H,self.W)
         target, _ = self.future_target(target)
         if motion is not None:
             target = target * motion[:,0:1]
