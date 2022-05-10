@@ -92,7 +92,7 @@ class TeacherStudent(nn.Module):
 
     def measure_segments(self, pred_segment, gt_segment):
 
-       return measure_static_segmentation_metric({'pred_segment': pred_segment}, {'gt_segment': gt_segment}, [64, 64],
+       return measure_static_segmentation_metric({'pred_segment': pred_segment}, {'gt_segment': gt_segment}, pred_segment.shape[-2:],
                                            segment_key=['pred_segment'],
                                            moving_only=False,
                                            eval_full_res=True)
@@ -169,12 +169,12 @@ class TeacherStudent(nn.Module):
         plt.axis('off')
 
         ax = fig.add_subplot(gs[2])
-        plt.imshow(pred_segment[0].cpu())
+        plt.imshow(pred_segment[0].cpu(), cmap='twilight')
         plt.title('Pred segments', fontsize=fsz)
         plt.axis('off')
 
         ax = fig.add_subplot(gs[3])
-        plt.imshow(gt_segment[0, 0].cpu())
+        plt.imshow(gt_segment[0, 0].cpu(), cmap='twilight')
         plt.title('GT segments', fontsize=fsz)
         plt.axis('off')
 
