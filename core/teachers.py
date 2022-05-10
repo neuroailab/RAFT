@@ -14,7 +14,7 @@ from raft import (RAFT,
                   MotionClassifier,
                   BoundaryClassifier)
 
-# from eisen import EISEN
+from eisen import EISEN
 
 import dorsalventral.models.layers as layers
 import dorsalventral.models.targets as targets
@@ -65,6 +65,7 @@ def path_to_args(path):
 def load_model(load_path,
                model_class=None,
                parse_path=False,
+               ignore_prefix=None,
                **kwargs):
 
     path = Path(load_path) if load_path else None
@@ -83,6 +84,8 @@ def load_model(load_path,
             cls = BoundaryClassifier
         elif 'flow' in name:
             cls = RAFT
+        elif 'eisen' in name:
+            cls = EISEN
         else:
             raise ValueError("Couldn't identify a model class associated with %s" % name)
         return cls
@@ -108,6 +111,13 @@ def load_model(load_path,
         for k in weight_dict.keys():
             if 'module' in k:
                 new_dict[k.split('module.')[-1]] = weight_dict[k]
+
+        if ignore_prefix is not None:
+            new_dict_1 = dict()
+            for k, v in new_dict.items():
+                new_dict_1[k.replace(ignore_prefix, '')] = v
+            new_dict = new_dict_1
+
         did_load = model.load_state_dict(new_dict, strict=False)
         print(did_load, type(model).__name__, load_path)
 
@@ -1243,6 +1253,9 @@ class KpPrior(nn.Module):
         return kp_prior
 
 if __name__ == '__main__':
+
+    # eisen = load_model(model_class='eisen', load_path='./checkpoints/80000_eisen_teacher_v1_128_bs4.pth', ignore_prefix='student.')
+
     args = get_args()
 
     motion_params = {
@@ -1267,7 +1280,7 @@ if __name__ == '__main__':
     bbnet = BipartiteBootNet().cuda()
     video = torch.rand(1,8,3,256,256) * 255.0
     out = bbnet(video)
-
+        
     # for i in range(100):
     #     img1 = torch.rand((1,3,512,512))
     #     img2 = torch.rand((1,3,512,512))
