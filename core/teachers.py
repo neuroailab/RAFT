@@ -15,6 +15,7 @@ from raft import (RAFT,
                   BoundaryClassifier)
 
 from eisen import EISEN
+from core.utils.utils import softmax_max_norm
 
 import dorsalventral.models.layers as layers
 import dorsalventral.models.targets as targets
@@ -104,7 +105,7 @@ def load_model(load_path,
         args.__setattr__(k,v)
 
     # build model
-    model = cls(args)
+    model = cls(args, **kwargs)
     if load_path is not None:
         weight_dict = torch.load(load_path)
         new_dict = dict()
@@ -1267,33 +1268,43 @@ class KpPrior(nn.Module):
 
 if __name__ == '__main__':
 
-    # eisen = load_model(model_class='eisen', load_path='./checkpoints/80000_eisen_teacher_v1_128_bs4.pth', ignore_prefix='student.')
+    eisen = load_model(model_class='eisen', load_path='./checkpoints/80000_eisen_teacher_v1_128_bs4.pth', ignore_prefix='student.',
+                       stem_pool=False,
+                       subsample_affinity=True,
+                       local_window_size=25,
+                       local_affinities_only=True,
+    )
+    # print(eisen)
+    print(sum([v.numel() for v in eisen.parameters()]))
+    eisen.cuda().eval()
 
-    args = get_args()
+    # args = get_args()
 
-    motion_params = {
-        'small': False,
+    # motion_params = {
+    #     'small': False,
 
-    }
-    boundary_params = {
-        'small': False,
-        'static_input': False,
-        'orientation_type': 'regression'
-    }
+    # }
+    # boundary_params = {
+    #     'small': False,
+    #     'static_input': False,
+    #     'orientation_type': 'regression'
+    # }
 
-    # target_net = nn.DataParallel(MotionToStaticTeacher(
-    #     downsample_factor=4,
-    #     motion_path=args.motion_path,
-    #     motion_model_params=motion_params,
-    #     boundary_path=args.boundary_path,
-    #     boundary_model_params=boundary_params
-    # ), device_ids=args.gpus)
-    # target_net.eval()
+    # # target_net = nn.DataParallel(MotionToStaticTeacher(
+    # #     downsample_factor=4,
+    # #     motion_path=args.motion_path,
+    # #     motion_model_params=motion_params,
+    # #     boundary_path=args.boundary_path,
+    # #     boundary_model_params=boundary_params
+    # # ), device_ids=args.gpus)
+    # # target_net.eval()
 
-    bbnet = BipartiteBootNet().cuda()
-    video = torch.rand(1,8,3,256,256) * 255.0
-    out = bbnet(video)
-        
+    # bbnet = BipartiteBootNet().cuda()
+    video = torch.rand(1,3,256,256) * 255.0
+    out, loss, segments = eisen(video.cuda(), to_image=True, local_window_size=15)
+    print("out", out.shape)
+    # out = bbnet(video)
+
     # for i in range(100):
     #     img1 = torch.rand((1,3,512,512))
     #     img2 = torch.rand((1,3,512,512))

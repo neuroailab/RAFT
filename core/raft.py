@@ -26,7 +26,7 @@ except:
 
 
 class RAFT(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, **kwargs):
         super(RAFT, self).__init__()
         self.args = args
 
