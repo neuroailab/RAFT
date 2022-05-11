@@ -89,10 +89,6 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
         loss_fn = lambda logits, labels: (_ds(logits) - labels).abs()
         assert flow_preds[-1].shape[-3] == 2, flow_preds[-1].shape
 
-
-    # print("num foreground px", flow_gt[0].sum())
-    # print("total pixels", np.prod(flow_gt.shape[-2:]))
-
     if pixel_thresh is not None:
         print("pos px", flow_gt.sum((1,2,3)))
         gt_weight = (flow_gt.sum((1,2,3), True) > pixel_thresh).float()
@@ -104,17 +100,10 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
     for i in range(n_predictions):
         i_weight = gamma**(n_predictions - i - 1)
         i_loss = loss_fn(flow_preds[i], flow_gt) * gt_weight
-        flow_loss += ((i_weight * valid * i_loss).sum((-2,-1)) / num_px).mean()
-
-    # epe = torch.sum((flow_preds[-1] - flow_gt)**2, dim=1).sqrt()
-    # epe = epe.view(-1)[valid.view(-1)]
+        flow_loss += ((i_weight * valid[:,None] * i_loss).sum((-2,-1)) / num_px).mean()
 
     metrics = {
         'loss': flow_loss,
-        # 'epe': epe.mean().item(),
-        # '1px': (epe < 1).float().mean().item(),
-        # '3px': (epe < 3).float().mean().item(),
-        # '5px': (epe < 5).float().mean().item(),
     }
 
     return flow_loss, metrics
@@ -207,35 +196,56 @@ def motion_loss(motion_preds, errors, valid, gamma=0.8, loss_scale=1.0):
 
     return loss, metrics
 
-def centroid_loss(dcent_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_flow=0.5, scale_to_pixels=False):
+def centroids_loss(centroid_preds, target, valid, gamma=0.8):
+    """
+    target is a [B,2,H,W] centroid offsets target, measured in pixels
+    valid is a [B,1,H,W] thingness mask that the model should also fit
+    """
+    n_predictions = len(centroid_preds)
+    thing_loss = cent_loss = loss = 0.0
+    thingness = valid
+    num_px = thingness.sum((-2,-1)).clamp(min=1)
 
-    n_predictions = len(dcent_preds)
-    flow_loss = 0.0
-
-    # exlude invalid pixels and extremely large diplacements
-    mag = torch.sum(flow_gt**2, dim=1).sqrt()
-    if valid is None:
-        valid = (mag < max_flow)
+    if list(target.shape[-2:]) != list(centroid_preds[-1].shape[-2:]):
+        _ds = lambda x: F.avg_pool2d(
+            x,
+            args.downsample_factor * args.teacher_downsample_factor,
+            stride=args.downsample_factor * args.teacher_downsample_factor)
     else:
-        valid = (valid >= 0.5) & (mag < max_flow)
-    CT = CentroidMaskTarget(thresh=min_flow)
-    centroid, mask = CT(mag[:,None].float()) # centroid
-    coords = CT.coords_grid(batch=1, size=mask.shape[-2:], device=centroid.device,
-                            normalize=True, to_xy=False)
-    target = centroid[...,None] * mask - coords
-    if scale_to_pixels:
-        H,W = target.shape[-2:]
-        target = target * torch.tensor([(H-1.)/2.,(W-1.)/2.], device=target.device).float().view(1,2,1,1)
-    num_px = mask.detach().sum(dim=(-2,-1)).clamp(min=1.0)
+        _ds = lambda x: x
+
+    thing_loss_cls = nn.BCEWithLogitsLoss(reduction='none')
+    thing_loss_fn = lambda logits, labels: thing_loss_cls(_ds(logits), labels)
+    cent_loss_fn = lambda logits, labels: (_ds(logits) - labels).abs()
 
     for i in range(n_predictions):
         i_weight = gamma**(n_predictions - i - 1)
-        i_loss = (dcent_preds[i] - target).square()
-        i_loss = (i_loss * mask).sum(dim=(-2,-1)) / num_px
-        flow_loss += i_weight * i_loss.mean()
+        cent_pred = centroid_preds[i]
+        if cent_pred.shape[1] == 3:
+            thing_pred, cent_pred = cent_pred.split([1,2], 1)
+        else:
+            thing_pred = None
 
-    metrics = {'loss': flow_loss}
-    return flow_loss, metrics
+        i_cent_loss = (cent_loss_fn(cent_pred, target) * valid).sum((-2,-1)) / num_px
+        i_cent_loss = i_cent_loss.sum(1).mean()
+        cent_loss += i_cent_loss * i_weight
+
+        if thing_pred is None:
+            loss += i_cent_loss * i_weight
+            continue
+
+        i_thing_loss = thing_loss_fn(thing_pred, thingness).mean()
+        thing_loss += i_thing_loss * i_weight
+
+        loss += (i_cent_loss + i_thing_loss) * i_weight
+
+    metrics = {
+        'loss': loss,
+        'thing_loss': thing_loss,
+        'centroid_loss': cent_loss
+    }
+
+    return loss, metrics
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -309,7 +319,7 @@ def train(args):
     elif args.model.lower() == 'thingness' or args.model.lower() == 'occlusion':
         model_cls = ThingsClassifier
         print("used ThingnessClassifier")
-    elif args.model.lower() == 'centroid' or args.model.lower() == 'motion_centroid':
+    elif args.model.lower() in ['centroids']:
         model_cls = CentroidRegressor
         print("used CentroidRegressor")
     elif args.model.lower() == 'motion':
@@ -323,7 +333,6 @@ def train(args):
         print("used RAFT for %s" % args.model.lower())
     model = nn.DataParallel(model_cls(args), device_ids=args.gpus)
     print("Parameter Count: %d" % count_parameters(model))
-    print("Using ground truth? %s" % args.supervised)
 
     if args.restore_ckpt is not None:
         did_load = model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
@@ -412,20 +421,19 @@ def train(args):
             )
             if args.model.lower() in ['flow', 'flow_centroids']:
                 target = targets
+            elif args.model.lower() in ['centroids']:
+                target, valid = targets
 
             print("TARGET SHAPE", target.shape, args.model.lower())
+            print("VALID SHAPE", (valid.shape if valid is not None else None))
             if len(target.shape) == 5:
                 target = target.squeeze(1)
 
             ## compute loss
-            if args.model.lower() in ['centroid', 'motion_centroid']:
-                loss, metrics = centroid_loss(flow_predictions, target, valid, args.gamma, scale_to_pixels=args.scale_centroids, pixel_thresh=args.pixel_thresh)
-            elif args.use_motion_loss and args.model.lower() == 'motion':
-                loss, metrics = motion_loss(flow_predictions, target, valid, args.gamma, loss_scale=args.loss_scale)
-            elif args.model.lower() == 'boundary':
-                loss, metrics = boundary_loss(flow_predictions, target, valid, args.gamma, pixel_thresh=args.pixel_thresh)
-            else:
+            if args.model.lower() in ['flow', 'flow_centroids']:
                 loss, metrics = sequence_loss(flow_predictions, target, valid, args.gamma, pos_weight=args.pos_weight, pixel_thresh=args.pixel_thresh)
+            elif args.model.lower() in ['thingness', 'centroids']:
+                loss, metrics = centroids_loss(flow_predictions, target, valid, args.gamma)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
@@ -510,7 +518,7 @@ def get_args(cmd=None):
 
     ## model class
     parser.add_argument('--model', type=str, default='RAFT', help='Model class')
-    parser.add_argument('--supervised', action='store_true', help='whether to supervise')
+    parser.add_argument('--predict_mask', action='store_true', help='Whether to predict a thingness mask')
     parser.add_argument('--bootstrap', action='store_true', help='whether to bootstrap')
     parser.add_argument('--teacher_ckpt', help='checkpoint for a pretrained RAFT. If None, use GT')
     parser.add_argument('--teacher_iters', type=int, default=24)

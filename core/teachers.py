@@ -128,7 +128,6 @@ def load_model(load_path,
 
     return model
 
-
 class MotionToStaticTeacher(nn.Module):
     """
     Module that takes pretrained motion and/or boundary models,
@@ -553,6 +552,62 @@ class StaticToMotionTeacher(nn.Module):
             target = target * motion[:,0:1]
         return target
 
+class CentroidTeacher(nn.Module):
+    """
+    From a set of masks and a motion mask, construct a thingness and delta_centroids target
+    """
+    DEFAULT_CENTROID_PARAMS = {
+    }
+    def __init__(self,
+                 target_motion_thresh=0.5,
+                 centroid_model_params=DEFAULT_CENTROID_PARAMS,
+                 *args,
+                 **kwargs):
+        super().__init__()
+        self.target_motion_thresh = target_motion_thresh
+        self.centroid_target = self._build_centroid_target(
+            copy.deepcopy(centroid_model_params))
+
+    def _build_centroid_target(self, params):
+        return targets.CentroidTarget(
+            local_strides=[],
+            compute_offsets=True,
+            normalize=True,
+            scale_to_px=True,
+            return_masks=True,
+            thresh=self.target_motion_thresh,
+            **params)
+
+    def _segments_to_masks(self, segments):
+        M = segments.amax().item() + 1
+        B,T,H,W = segments.shape
+        masks = F.one_hot(segments, num_classes=M)
+        masks = masks.view(B*T,H,W,M).permute(0,3,1,2).float()
+
+        self.B, self.T, self.H, self.W = B,T,H,W
+        self.BT = self.B*self.T
+        return masks
+
+    def _filter_masks_with_motion(self, masks, motion):
+        num_px = masks.sum((-2,-1), True).clamp(min=1)
+        is_moving = (masks * motion).sum((-2,-1), True) / num_px
+        is_moving = (is_moving > self.target_motion_thresh).float() # [B,M,1,1]
+        moving_masks = (masks * is_moving) # [B,M,H,W]
+        thingness_target = moving_masks.amax(1, True) # [B,1,H,W]
+        return (thingness_target, moving_masks)
+
+    def forward(self, segments, motion):
+        assert len(segments.shape) == 4, segments.shape
+        assert segments.shape[1] == 1, segments.shape # single frame
+        assert len(motion.shape) == 5, motion.shape
+        assert motion.shape[-3] == 1, motion.shape
+        motion = motion[:,0] # [B,1,H,W]
+        masks = self._segments_to_masks(segments) # [B,M,H,W]
+        thingness_target, masks = self._filter_masks_with_motion(masks, motion)
+        offsets_target, masks = self.centroid_target(masks)
+        offsets_target = (offsets_target * masks.unsqueeze(2)).sum(1) * thingness_target
+        return (offsets_target, thingness_target)
+
 class GroundTruthGroupingTeacher(nn.Module):
 
     def __init__(self,
@@ -766,6 +821,9 @@ class BipartiteBootNet(nn.Module):
         elif self.student_model_type == 'flow':
             self.target_model = StaticToMotionTeacher(
                 local_centroids=True,
+                **target_model_params)
+        elif self.student_model_type == 'centroids':
+            self.target_model = CentroidTeacher(
                 **target_model_params)
         else:
             self.target_model = None
@@ -1128,6 +1186,9 @@ class BipartiteBootNet(nn.Module):
                     motion_mask):
         if self.student_model_type in ['flow', 'flow_centroids']:
             target = self.target_model(segments, motion_mask)
+        elif self.student_model_type in ['centroids']:
+            centroid_offsets, thingness = self.target_model(segments[:,0:1], motion_mask)
+            target = (centroid_offsets, thingness)
         else:
             raise NotImplementedError("%s is not implemented as a training mode for BBNet" % self.student_model_type)
         return target

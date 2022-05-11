@@ -194,7 +194,9 @@ class CentroidRegressor(RAFT):
 
     def __init__(self, args):
         super().__init__(args)
-        self.classifier_head = FlowHead(input_dim=self.hidden_dim, out_dim=2)
+        self.classifier_head = FlowHead(
+            input_dim=self.hidden_dim,
+            out_dim=(3 if args.predict_mask else 2))
 
     def forward(self, *args, **kwargs):
         ## static model
