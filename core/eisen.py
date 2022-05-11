@@ -14,13 +14,14 @@ from core.utils.connected_component import label_connected_component
 import core.utils.utils as utils
 
 class EISEN(nn.Module):
-    def __init__(self,
+    def __init__(self, args,
                  affinity_res=[128, 128],
                  kq_dim=32,
                  latent_dim=64,
                  subsample_affinity=True,
                  eval_full_affinity=False,
                  local_window_size=25,
+                 local_affinities_only=False,
                  num_affinity_samples=1024,
                  propagation_iters=40,
                  propagation_affinity_thresh=0.5,
@@ -28,7 +29,8 @@ class EISEN(nn.Module):
                  num_competition_rounds=3,
                  sparse=False,
                  stem_pool=True,
-    ):
+                 nonlinearity=utils.softmax_max_norm
+                 ):
         super(EISEN, self).__init__()
 
         # [Backbone encoder]
@@ -37,6 +39,8 @@ class EISEN(nn.Module):
 
         # [Affinity decoder]
         self.key_query_proj = KeyQueryExtractor(input_dim=output_dim, kq_dim=kq_dim, latent_dim=latent_dim, downsample=False)
+        self.nonlinearity = nonlinearity
+
 
         # [Affinity sampling]
         self.sample_affinity = subsample_affinity and (not (eval_full_affinity and (not self.training)))
@@ -54,13 +58,18 @@ class EISEN(nn.Module):
         self.competition = Competition(num_masks=num_masks, num_competition_rounds=num_competition_rounds)
 
         self.local_window_size = local_window_size
-        self.num_affinity_samples = num_affinity_samples
+        if local_affinities_only:
+            self.num_affinity_samples = self.local_window_size ** 2
+        else:
+            self.num_affinity_samples = num_affinity_samples
         self.affinity_res = affinity_res
         self.sparse = sparse
         self.register_buffer("pixel_mean", torch.Tensor([123.675, 116.28, 103.53]).view(1, -1, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor([58.395, 57.12, 57.375]).view(1, -1, 1, 1), False)
 
-    def forward(self, img, segment_target, get_segments=False):
+    def forward(self, img, segment_target=None, get_segments=False, to_image=True,
+                local_window_size=None):
+
         """ build outputs at multiple levels"""
 
         # Normalize inputs
@@ -72,7 +81,6 @@ class EISEN(nn.Module):
         # Key & query projection
         key, query = self.key_query_proj(features)
 
-        print('key.shape: ', key.shape)
         B, C, H, W = key.shape
 
         # Sampling affinities
@@ -82,14 +90,29 @@ class EISEN(nn.Module):
         affinity_logits = self.compute_affinity_logits(key, query, sample_inds)
         affinity_logits *= C ** -0.5
 
-        print('affinity.shape: ', key.shape)
-
         # Compute affinity loss
-        loss = self.compute_loss(affinity_logits, sample_inds, segment_target)
-
+        loss = 0.0
+        if self.training and segment_target is not None:
+            loss = self.compute_loss(affinity_logits, sample_inds, segment_target)
         # Compute segments via propagation and competition
-        segments = self.compute_segments(affinity_logits, sample_inds) if get_segments else None
+        segments = None
+        if get_segments:
+            segments = self.compute_segments(affinity_logits, sample_inds)
 
+        if local_window_size is not None:
+            k = self.local_window_size
+            k_out = local_window_size
+            assert k_out <= k
+            p = (k - k_out) // 2
+            affinity_logits = affinity_logits.view(B, H * W, k, k)
+            affinity_logits = affinity_logits[:, :, p:-p, p:-p]
+            affinity_logits = affinity_logits.reshape(B, H * W, k_out ** 2)
+
+        if self.nonlinearity is not None:
+            affinity_logits = self.nonlinearity(affinity_logits)
+
+        if to_image:
+            affinity_logits = affinity_logits.view(B, H, W, -1).permute(0, 3, 1, 2)
 
         return affinity_logits, loss, segments
 
@@ -224,3 +247,4 @@ if __name__ == "__main__":
     model = EISEN().cuda()
     for i in range(10):
         model(x, segment_target, get_segment=True)
+

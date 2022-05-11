@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from scipy import interpolate
-from torch_sparse import SparseTensor
+# from torch_sparse import SparseTensor
 
 class InputPadder:
     """ Pads images such that dimensions are divisible by 8 """
@@ -32,7 +32,7 @@ def forward_interpolate(flow):
 
     x1 = x0 + dx
     y1 = y0 + dy
-    
+
     x1 = x1.reshape(-1)
     y1 = y1.reshape(-1)
     dx = dx.reshape(-1)

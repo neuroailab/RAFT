@@ -14,6 +14,9 @@ from raft import (RAFT,
                   MotionClassifier,
                   BoundaryClassifier)
 
+from eisen import EISEN
+from core.utils.utils import softmax_max_norm
+
 import dorsalventral.models.layers as layers
 import dorsalventral.models.targets as targets
 import dorsalventral.models.fire_propagation as fprop
@@ -63,6 +66,7 @@ def path_to_args(path):
 def load_model(load_path,
                model_class=None,
                parse_path=False,
+               ignore_prefix=None,
                **kwargs):
 
     path = Path(load_path) if load_path else None
@@ -81,6 +85,8 @@ def load_model(load_path,
             cls = BoundaryClassifier
         elif 'flow' in name:
             cls = RAFT
+        elif 'eisen' in name:
+            cls = EISEN
         else:
             raise ValueError("Couldn't identify a model class associated with %s" % name)
         return cls
@@ -99,13 +105,24 @@ def load_model(load_path,
         args.__setattr__(k,v)
 
     # build model
-    model = cls(args)
+    if cls.__name__ == 'EISEN':
+        print("LOAD EISEN")
+        model = cls(args, **kwargs)
+    else:
+        model = cls(args)
     if load_path is not None:
         weight_dict = torch.load(load_path)
         new_dict = dict()
         for k in weight_dict.keys():
             if 'module' in k:
                 new_dict[k.split('module.')[-1]] = weight_dict[k]
+
+        if ignore_prefix is not None:
+            new_dict_1 = dict()
+            for k, v in new_dict.items():
+                new_dict_1[k.replace(ignore_prefix, '')] = v
+            new_dict = new_dict_1
+
         did_load = model.load_state_dict(new_dict, strict=False)
         print(did_load, type(model).__name__, load_path)
 
@@ -273,10 +290,13 @@ class MotionToStaticTeacher(nn.Module):
             return torch.cat([b,c], 1)
         elif self.student_model_type == 'flow':
             return target['flow']
+        else:
+            return target
 
     def forward(self, img1, img2,
                 adj=None,
                 bootstrap=True,
+                run_kp=True,
                 *args, **kwargs):
 
         motion, m_ups_mask = self.get_motion_preds(
@@ -297,7 +317,8 @@ class MotionToStaticTeacher(nn.Module):
             orientations=orientations,
             flow=flow,
             adj=adj,
-            bootstrap=bootstrap
+            bootstrap=bootstrap,
+            run_kp=run_kp
         )
         if self.return_intermediates:
             static_target, motion_targets = target
@@ -446,6 +467,742 @@ class FuturePredictionTeacher(nn.Module):
         boundary_mask = (boundaries[:,0] > self.target_boundary_thresh).float()
         return (target, interior_mask, boundary_mask)
 
+class StaticToMotionTeacher(nn.Module):
+    """
+    Compute centroid features from a set of tracked segments
+    and create an optical flow target from them.
+    """
+    DEFAULT_CENTROID_PARAMS = {
+        'local_radius': 4
+    }
+    DEFAULT_TARGET_PARAMS = {
+        'warp_radius': 3,
+        'warp_dilation': 1,
+        'normalize_features': False,
+        'patch_radius': 0,
+        'error_func': None,
+        'distance_func': None,
+        'target_type': 'regression',
+        'beta': 1.0
+    }
+    def __init__(self,
+                 local_centroids=False,
+                 local_strides=[1,2,4,8],
+                 target_motion_thresh=0.5,
+                 centroid_model_params=DEFAULT_CENTROID_PARAMS,
+                 target_model_params=DEFAULT_TARGET_PARAMS,
+                 *args,
+                 **kwargs):
+        super().__init__()
+        if local_centroids:
+            self.local_strides = local_strides or []
+        else:
+            self.local_strides = []
+        self.target_motion_thresh = target_motion_thresh
+        self.centroid_target = self._build_centroid_target(
+            copy.deepcopy(centroid_model_params))
+
+        self.future_target = self._build_future_target(
+            copy.deepcopy(target_model_params))
+
+    def _build_centroid_target(self, params):
+        return targets.CentroidTarget(
+            local_strides=self.local_strides, # if not [], global centroid
+            compute_offsets=True,
+            normalize=True,
+            scale_to_px=True,
+            return_masks=True,
+            thresh=0.5,
+            **params)
+
+    def _build_future_target(self, params):
+        return targets.FuturePredictionTarget(**params)
+
+    def _segments_to_masks(self, segments):
+
+        ## do some filtering here
+
+        M = segments.amax().item() + 1
+        B,T,H,W = segments.shape
+        masks = F.one_hot(segments, num_classes=M)
+        masks = masks.view(B*T,H,W,M).permute(0,3,1,2).float()
+
+        self.B, self.T, self.H, self.W = B,T,H,W
+        self.BT = self.B*self.T
+        return masks
+
+    def forward(self, segments, motion):
+        assert len(segments.shape) == 4, segments.shape
+        assert segments.shape[1] == 2, segments.shape # two frames
+        masks = self._segments_to_masks(segments)
+        if motion is not None:
+            motion_mask = motion.view(self.BT,1,1,self.H,self.W)
+        else:
+            motion_mask = torch.ones((1,1,1,1,1)).to(masks.device)
+        target, loss_mask = self.centroid_target(masks * motion_mask[:,0])
+        if len(self.centroid_target.local_strides):
+            target = target * motion_mask[:,0]
+            target = target.view(self.B, self.T, len(self.local_strides)*2, *target.shape[-2:])
+        else:
+            target = target * loss_mask[:,:,None]
+            if motion is not None:
+                target = target * motion_mask
+            target = target.sum(1).view(self.B,self.T,-1,self.H,self.W)
+        target, _ = self.future_target(target)
+        if motion is not None:
+            target = target * motion[:,0:1]
+        return target
+
+class GroundTruthGroupingTeacher(nn.Module):
+
+    def __init__(self,
+                 downsample_factor=2,
+                 radius=7):
+
+        super().__init__()
+        self.downsample_factor = self.stride = downsample_factor
+        self.radius = self.r = radius
+        self.k = 2*self.r + 1
+        self.K = self.k**2
+
+    def forward(self, segments, stride=None):
+
+        static = False
+        if len(segments.shape) == 4:
+            static = True
+            segments = segments.unsqueeze(1)
+        else:
+            assert len(segments.shape) == 5, segments.shape
+        assert segments.shape[2] == 1, segments.shape # single channel
+        if stride is not None:
+            self.stride = stride
+        segments = segments[...,::self.stride,::self.stride]
+        neighbors = fprop.get_local_neighbors(
+            segments[:,:,0], radius=self.r, to_image=True) # [B,T,K,H,W]
+        adj = (segments == neighbors).float()
+        if static:
+            adj = adj[:,0]
+        return adj
+
+class BipartiteBootNet(nn.Module):
+    """
+    """
+    DEFAULT_INPUTS = {
+        k:'images' for k in ['static', 'centroid', 'dynamic', 'boot']}
+
+    DEFAULT_BOOT_PARAMS = {
+        'target_model_params': MotionToStaticTeacher.DEFAULT_TARGET_PARAMS,
+        'target_motion_thresh': 0.5,
+        'target_boundary_thresh': 0.5
+    }
+    DEFAULT_GROUPING_PARAMS = {
+        'num_iters': 10,
+        'radius_temporal': 3,
+        'adj_temporal_thresh': None
+    }
+    DEFAULT_TRACKING_PARAMS = {
+        'num_masks': 32,
+        'compete_thresh': 0.2,
+        'num_competition_rounds': 2,
+        'selection_strength': 0
+    }
+    DEFAULT_STATIC_TO_MOTION_PARAMS = {
+    }
+    def __init__(self,
+                 student_model_type=None,
+                 target_model_params=DEFAULT_STATIC_TO_MOTION_PARAMS,
+                 input_keys=DEFAULT_INPUTS,
+                 dynamic_path=None,
+                 dynamic_params={},
+                 static_path=None,
+                 static_params={},
+                 centroid_path=None,
+                 centroid_params={},
+                 boot_paths={'flow_path': None},
+                 parse_paths=True,
+                 boot_params=DEFAULT_BOOT_PARAMS,
+                 grouping_params=DEFAULT_GROUPING_PARAMS,
+                 tracking_params=DEFAULT_TRACKING_PARAMS,
+                 input_normalization=None,
+                 downsample_factor=2,
+                 static_resolution=4,
+                 dynamic_resolution=2,
+                 random_dimensions=0,
+                 grouping_window=2,
+                 tracking_step_size=1
+    ):
+        super().__init__()
+        self.parse_paths = parse_paths
+
+        ## preprocessing and downsampling
+        self.input_keys = input_keys
+        self.downsample_factor = self.stride = downsample_factor
+        self.input_normalization = input_normalization or nn.Identity()
+
+        ## dimensions for plateau map
+        self._set_plateau_dimensions(
+            static_resolution,
+            dynamic_resolution,
+            random_dimensions
+        )
+
+        ## load models
+        self._load_models(
+            boot_paths=boot_paths, boot_params=boot_params,
+            dynamic_path=dynamic_path, dynamic_params=dynamic_params,
+            static_path=static_path, static_params=static_params,
+            centroid_path=centroid_path, centroid_params=centroid_params
+        )
+
+        ## how to slice input video and do spacetime grouping + tracking
+        self.Group = self.build_grouping_model(grouping_params)
+        self.Track = self.build_tracking_model(tracking_params)
+        self.T_group = grouping_window
+        self.T_track = tracking_step_size
+
+        ## how to output a training target
+        self.student_model_type = student_model_type
+        self.build_target_model(target_model_params)
+
+    @property
+    def student_model_type(self):
+        return self._student_model_type
+    @student_model_type.setter
+    def student_model_type(self, mode):
+        self._student_model_type = mode
+
+    def _set_plateau_dimensions(
+            self,
+            static_res=None,
+            dynamic_res=None,
+            random_dims=None
+    ):
+        self.static_resolution = static_res
+        self.dynamic_resolution = dynamic_res
+        self.Q_random = random_dims or 0
+
+        self.Q_static = (static_res**2) if static_res else None
+        self.Q_dynamic = (dynamic_res**2) if dynamic_res else None
+        self.Q = (self.Q_static or 1) * (self.Q_dynamic or 1) + self.Q_random
+
+        print("Plateau map dimensions: [stat %d, dyn %d, rand %d, total %d]" %\
+              (self.Q_static or 0, self.Q_dynamic or 0, self.Q_random, self.Q))
+
+
+    def _load_models(self,
+                     boot_paths, boot_params,
+                     dynamic_path, dynamic_params,
+                     static_path, static_params,
+                     centroid_path, centroid_params):
+        self._load_boot_model(boot_paths, boot_params)
+        self._load_dynamic_model(dynamic_path, dynamic_params)
+        self._load_static_model(static_path, static_params)
+        self._load_centroid_model(centroid_path, centroid_params)
+
+    def _load_boot_model(self, paths, params):
+        self.boot_model = MotionToStaticTeacher(
+            student_model_type=None,
+            motion_path=paths.get('motion_path', None),
+            boundary_path=paths.get('boundary_path', None),
+            flow_path=paths.get('flow_path', None),
+            downsample_factor=self.downsample_factor,
+            spatial_resolution=self.static_resolution,
+            motion_resolution=self.dynamic_resolution,
+            target_from_motion=False,
+            build_flow_target=True,
+            parse_paths=self.parse_paths,
+            **params
+        ) if (paths is not None) else None
+
+    def _load_dynamic_model(self, path, params):
+
+        ## defaults to boot model if there's no path to restore from
+        if path is None:
+            self.dynamic_model = self.boot_model
+            self._dynamic_is_boot_model = True
+        else:
+            self.dynamic_model = load_model(path,
+                                            model_class='flow',
+                                            parse_path=self.parse_paths,
+                                            **params)
+            self._dynamic_is_boot_model = False
+
+    def _load_static_model(self, path, params):
+        if path == 'ground_truth':
+            print("USING GT AFFINITIES, downsample %d" % self.downsample_factor)
+            self.static_model = GroundTruthGroupingTeacher(
+                downsample_factor=self.downsample_factor,
+                **params)
+        elif path is None:
+            self.static_model = None
+        elif 'eisen' in path:
+            self.static_model = load_model(model_class='eisen',
+                                           load_path=path,
+                                           ignore_prefix='student.',
+                                           parse_path=False,
+                                           local_affinities_only=True,
+                                           **params)
+
+    def _load_centroid_model(self, path, params):
+        if path is not None:
+            raise NotImplementedError("Need method for loading centroid model")
+        self.centroid_model = None
+
+    def build_grouping_model(self, grouping_params):
+
+        return fprop.SpacetimeLocalKProp(**grouping_params)
+
+    def build_tracking_model(self, tracking_params):
+
+        tracker = fprop.ObjectTracker(**tracking_params)
+        self.num_competition_rounds = tracker.num_competition_rounds + 0
+        return tracker
+
+    def build_target_model(self, target_model_params):
+        if self.student_model_type == 'flow_centroids':
+            self.target_model = StaticToMotionTeacher(
+                local_centroids=False,
+                **target_model_params)
+        elif self.student_model_type == 'flow':
+            self.target_model = StaticToMotionTeacher(
+                local_centroids=True,
+                **target_model_params)
+        else:
+            self.target_model = None
+
+    @staticmethod
+    def get_affinity_preds(net, img1, nonlinearity=None, **kwargs):
+        if net is None:
+            return None
+        else:
+            affinities = (nonlinearity or nn.Identity())(net(img1, **kwargs))
+            if isinstance(affinities, (list, tuple)):
+                affinities = affinities[0]
+            return affinities
+
+    @staticmethod
+    def get_centroid_preds(net, img1, nonlinearity=None):
+        if net is None:
+            return None
+        else:
+            raise NotImplementedError("Need to get centroids")
+
+    @staticmethod
+    def get_temporal_preds(net, img1, img2, bootstrap=True, **kwargs):
+        if net is None:
+            return (None, None)
+
+        if isinstance(net, MotionToStaticTeacher):
+            print("using a bootnet to predict flow")
+            net.target_model.target_type = 'motion'
+            net.return_intermediates = False
+            net.student_model_type = 'flow'
+
+        flow_fwd = net(img1, img2, bootstrap=bootstrap, **kwargs)
+        flow_bck = net(img2, img1, bootstrap=bootstrap, **kwargs)
+
+        print("flow fwd", flow_fwd.shape)
+        print("flow bck", flow_bck.shape)
+
+        return (flow_fwd, flow_bck)
+
+    @staticmethod
+    def get_boot_preds(net, img1, img2,
+                       bootstrap=True,
+                       get_backward_flow=False,
+                       **kwargs):
+        if net is None:
+            return (None, None, None, None)
+
+        assert isinstance(net, MotionToStaticTeacher), type(net).__name__
+        net.target_model.target_type = 'motion_static'
+        net.return_intermediates = False
+        net.student_model_type = None
+
+        h0, adj, activated, flow_fwd, motion_mask = net(img1, img2,
+                                                        bootstrap=bootstrap,
+                                                        run_kp=False,
+                                                        **kwargs)
+
+        flow_bck = None
+        if get_backward_flow:
+            flow_bck, motion_mask_bck = net(img2, img1,
+                                            bootstrap=bootstrap,
+                                            run_kp=False,
+                                            **kwargs)[-2:]
+
+
+        return (
+            h0, adj, activated,
+            flow_fwd, flow_bck,
+            motion_mask)
+
+    def _set_shapes(self,
+                    video,
+                    grouping_window=None,
+                    tracking_step_size=None,
+                    stride=None
+    ):
+        if stride is not None:
+            self.stride = self.downsample_factor = stride
+        if grouping_window is not None:
+            self.T_group = grouping_window
+        if tracking_step_size is not None:
+            self.T_track = tracking_step_size
+
+        self.dsample = lambda x: F.avg_pool2d(
+            x, self.stride, stride=self.stride)
+
+        shape = video.shape
+        self.B, self.T, _ , self.H_in, self.W_in = shape
+        self.is_static = (self.T == 1)
+        self.BT = self.B*self.T
+        self._T = self.T - 1
+        self._BT = self.B*self._T
+        self.H, self.W = [self.H_in // self.stride, self.W_in // self.stride]
+        self.size = [self.H, self.W]
+        self.size_in = [self.H_in, self.W_in]
+
+        assert self.T >= self.T_group, \
+            "Input video must be at least length of a grouping window, but" +\
+            "T_video = %d and T_group = %d" % (self.T, self.T_group)
+
+        assert self.T_track <= self.T_group, (self.T_track, self.T_group)
+
+    def _normalize(self, video):
+
+        if video.dtype == torch.uint8:
+            video = video.float()
+
+        return self.input_normalization(video)
+
+    def _compute_temporal_slices(self):
+
+        self.temporal_slices = [
+            [t, t+self.T_group] for t in range(0, self.T - self.T_group + 1, self.T_track)
+        ]
+        # print("temporal slices", self.temporal_slices)
+
+    def compute_grouping_inputs(
+            self,
+            video,
+            static_params={},
+            dynamic_params={},
+            boot_params={},
+            centroid_params={}
+    ):
+        """
+        Pass each pair of frames into the proper networks to compute
+        spatial affinities, temporal affinities, and KP init.
+
+        Then run SpacetimeKP to get a plateau map tensor and Competition
+        to get the actual groups and the quantities needed to initialize
+        the next window and track objects.
+        """
+        T = self._get_video(video).shape[1] # could be less than T_group for last window
+        _s_inp = lambda t: self._get_frames(video, t, 1, 'static')
+        _b_inp = lambda t: self._get_frames(video, t, 2, 'boot')
+
+        if T == 1: # only adj_static
+            assert self._static_model is not None
+            return (
+                self.get_centroid_preds(video[:,0], **centroid_params),
+                self.get_affinity_preds(video[:,0], **static_params),
+                None,
+                None,
+                None,
+                None
+            )
+
+        h0, adj, activated, flow_fwd, flow_bck, motion = [], [], [], [], [], []
+        for t in range(T-1): # for each frame pair
+            img1, img2 = _b_inp(t)
+
+            ## per-image outputs
+            adj_space_t = self.get_affinity_preds(
+                self.static_model,
+                *[x.detach() for x in _s_inp(t)],
+                **static_params)
+            h0_space_t = self.get_centroid_preds(
+                self.centroid_model, img1, **centroid_params)
+
+            ## per image-pair outputs
+            if (self._dynamic_is_boot_model): # use bootnet to get all SKP inputs
+                boot_preds = self.get_boot_preds(
+                    self.boot_model, img1, img2,
+                    get_backward_flow=True,
+                    **boot_params)
+                h0_t, adj_space_t_boot, activated_t = boot_preds[:3]
+                flow_fwd_t, flow_bck_t, motion_fwd_t = boot_preds[3:6]
+                if adj_space_t is None:
+                    adj_space_t = adj_space_t_boot
+            else: # use a separate dynamic model to get the temporal SKP inputs
+                flow_fwd_t, flow_bck_t = self.get_temporal_preds(
+                    self.dynamic_model, img1, img2, **dynamic_params)
+                raise NotImplementedError("build h0 and activated")
+
+            h0.append(h0_t)
+            adj.append(adj_space_t)
+            activated.append(activated_t)
+            flow_fwd.append(self.dsample(flow_fwd_t))
+            flow_bck.append(self.dsample(flow_bck_t))
+            motion.append(motion_fwd_t)
+
+            ## last frame
+            if (t+1) == (T-1):
+                adj_space_t = self.get_affinity_preds(
+                    self.static_model,
+                    *[x.detach() for x in _s_inp(t+1)],
+                    **static_params)
+
+                boot_preds = self.get_boot_preds(
+                    self.boot_model, img2, img1,
+                    get_backward_flow=False,
+                    **boot_params)
+                h0_t, adj_space_t_boot, activated_t, _, _, motion_bck_t = boot_preds
+                if adj_space_t is None:
+                    adj_space_t = adj_space_t_boot
+
+                h0.append(h0_t)
+                adj.append(adj_space_t)
+                activated.append(activated_t)
+                motion.append(motion_bck_t)
+
+        adj = torch.stack(adj, 1)
+        h0 = torch.stack(h0, 1)
+        flow_fwd = torch.stack(flow_fwd, 1)
+        flow_bck = torch.stack(flow_bck, 1)
+        activated = torch.stack(activated, 1)
+        motion = torch.stack(motion, 1)
+
+        return (h0, adj, activated, flow_fwd, flow_bck, motion)
+
+    def compute_initial_segments(self, plateau,
+                                 motion_mask=None,
+                                 num_rounds=None):
+
+        B,T,H,W,Q = plateau.shape
+        if num_rounds is None:
+            self.Track.num_competition_rounds = self.num_competition_rounds
+        if motion_mask is not None:
+            motion = motion_mask[:,:,0,:,:,None] # [B,T,H,W,1]
+            plateau = torch.cat([plateau * motion, 1 - motion], -1)
+
+        ## run competition at the midpoint of the group
+        t_comp = T // 2
+        masks_t, positions_t, alive_t, pointers_t = self.Track(
+            plateau[:,t_comp:t_comp+1])[:4]
+        segments_t = masks_t.argmax(-1)
+
+        self.tracked_objects = {
+            'positions': positions_t,
+            'pointers': pointers_t,
+            'alive': alive_t
+        }
+
+        segments = [segments_t]
+        if t_comp > 0:
+            self.Track.num_competition_rounds = 0
+            masks_pre = self.Track(
+                plateau[:,:t_comp],
+                agents=positions_t.repeat(1,t_comp,1,1),
+                alive=alive_t.repeat(1,t_comp,1,1),
+                phenotypes=pointers_t.repeat(1,t_comp,1,1),
+                compete=False)[0]
+            segments_pre = masks_pre.argmax(-1)
+            segments.insert(0, segments_pre)
+
+        if T > (t_comp + 1):
+            T_post = T - t_comp - 1
+            masks_post = self.Track(
+                plateau[:,-T_post:],
+                agents=positions_t.repeat(1,T_post,1,1),
+                alive=alive_t.repeat(1,T_post,1,1),
+                phenotypes=pointers_t.repeat(1,T_post,1,1),
+                compete=False)[0]
+            segments_post = masks_post.argmax(-1)
+            segments.insert(-1, segments_post)
+
+        segments = torch.cat(segments, 1)
+        self.Track.num_competition_rounds = self.num_competition_rounds
+        return segments
+
+    def compute_overlap_h0(self, plateau, segments, h0_new):
+        T_prev, T_new = plateau.shape[1], h0_new.shape[1]
+        T_overlap = T_prev - self.T_track
+        plateau = plateau[:,-T_overlap:].view(-1, *plateau.shape[2:])
+        segments = segments[:,-T_overlap].view(-1, *segments.shape[2:])
+        masks = F.one_hot(segments, num_classes=segments.amax().item()+1).float()
+        alive = masks.amax((1,2))[...,None]
+
+        plateau_flat, _ =  fprop.ObjectTracker.flatten_plateau_with_masks(
+            plateau, masks, alive, flatten_masks=False
+
+        )
+        plateau_flat = plateau_flat.view(-1, T_overlap, *plateau_flat.shape[1:])
+        h0_overlap = torch.cat([
+            plateau_flat.permute(0,1,4,2,3),
+            h0_new[:,T_overlap:]
+        ], 1)
+        return h0_overlap
+
+    def group_tracked_inputs(self,
+                             segments_prev,
+                             h0,
+                             adj,
+                             activated,
+                             fwd_flow,
+                             bck_flow,
+                             motion_mask):
+
+
+        B,T = h0.shape[:2]
+        T_overlap = T - self.T_track
+        T_new = T - T_overlap
+
+        ## all nodes in the overlapping time slices are already activated
+        activated = torch.cat([
+            torch.ones_like(activated[:,:T_overlap]),
+            activated[:,T_overlap:]], 1)
+
+        plateau_new = self.Group(
+            *[x.detach() for x in [
+                h0, adj, activated, fwd_flow, bck_flow]],
+            motion_mask.detach() if motion_mask is not None else None
+        )
+
+        if motion_mask is not None:
+            motion = motion_mask[:,:,0,:,:,None]
+            _plateau_new = torch.cat([plateau_new * motion, 1 - motion], -1)
+        else:
+            _plateau_new = plateau_new
+
+        self.Track.num_competition_rounds = 1
+        segments_new = self.Track(
+            _plateau_new[:,T_overlap:],
+            agents=self.tracked_objects['positions'].repeat(1,T_new,1,1),
+            alive=self.tracked_objects['alive'].repeat(1,T_new,1,1),
+            phenotypes=self.tracked_objects['pointers'].repeat(1,T_new,1,1),
+            compete=False,
+            update_pointers=True,
+            yoke_phenotypes_to_agents=False,
+            noise=0)[0].argmax(-1)
+
+        self.Track.num_competition_rounds = self.num_competition_rounds
+        segments = torch.cat([
+            segments_prev[:,-T_overlap:], segments_new], 1)
+
+        return plateau_new, segments, segments_new
+
+    def _get_video(self, video, img_key='images'):
+        if hasattr(video, 'keys'):
+            return video[img_key]
+        else:
+            assert isinstance(video, torch.Tensor)
+            return video
+
+    def _get_input(self, video, model_key='boot'):
+        if hasattr(video, 'keys'):
+            k = self.input_keys.get(model_key, 'images')
+            if k != 'images':
+                print("WARNING! USING %s AS INPUT, COULD BE GT" % k)
+            return video[k]
+        else:
+            assert isinstance(video, torch.Tensor)
+            return video
+
+    def _get_all_inputs(self, video, tstart, tend):
+        return {k:video[k][:,tstart:tend] for k in video.keys()}
+
+    def _get_frames(self, video, frame, length=2, model_key='boot'):
+        return torch.unbind(
+            self._get_input(video, model_key)[:,frame:frame+length], 1)
+
+    def _get_target(self,
+                    segments,
+                    h0,
+                    adj,
+                    activated,
+                    fwd_flow,
+                    bck_flow,
+                    motion_mask):
+        if self.student_model_type in ['flow', 'flow_centroids']:
+            target = self.target_model(segments, motion_mask)
+        else:
+            raise NotImplementedError("%s is not implemented as a training mode for BBNet" % self.student_model_type)
+        return target
+
+    def forward(self, video,
+                stride=None,
+                grouping_window=None,
+                tracking_step_size=None,
+                mask_with_motion=False,
+                **kwargs
+    ):
+        """
+        From an RGB video of shape [B,T,3,Hin,Win], computes:
+
+        - Spatial affinities
+            - local affinities [B,T,Ks,H,W] where Ks = (2*radius_spatial+1)**2
+            - [global affinities] [B,T,HW,HW] from which global affinities can be sampled
+
+        - Temporal Affinities (equivalent to optical flow) [B,T-1,2Kt,H,W],
+              where factor of 2 is for backward temporal affinities
+
+        - [Spacetime plateau map initialization] [B,T,Q_static + Q_dynamic + Q_random,H,W]
+              where Q_static, Q_dynamic, and Q_random are dimensions that depend on a pixel's
+              predicted object centroid, motion direction, and random states, respectively
+
+        - [Spacetime plateau map activations] [B,T,1,H,W]
+              a set of points at which to initialize KP
+
+        In a mature BBNet, the spatial affinities are predicted by a per-frame model (EISEN)
+        and the temporal affinities are predicted by a video model (RAFT).
+
+        However, during the initial "boot-up" phase of development, the spatial affinities
+        (and other KP inputs) are provided by a pretrained BootNet, which operates on
+        dynamic scenes and attempts to group based on motion and oriented boundaries.
+
+        The above representations are fed as inputs into SpacetimeKP and a Competition-based
+        tracking module, which together produce a visual group tensor of shape [B,T,H,W] <int>
+        """
+        self._set_shapes(self._get_video(video),
+                         grouping_window,
+                         tracking_step_size,
+                         stride)
+        if not hasattr(video, 'keys'):
+            video = {'images': video}
+        video['images'] = self._normalize(video['images'])
+
+        ## figure out slice indices for video clips
+        self._compute_temporal_slices()
+        h0_overlap = None
+        for window_idx, (ts, te) in enumerate(self.temporal_slices):
+            # print(window_idx, (ts, te))
+            grp_inputs = self.compute_grouping_inputs(
+                self._get_all_inputs(video, ts, te), **kwargs)
+            if (self.static_model is not None) and not mask_with_motion:
+                motion_mask = None
+            else:
+                motion_mask = grp_inputs[-1]
+            if window_idx == 0:
+                plateau = self.Group(*[x.detach() for x in grp_inputs])
+                segments = self.compute_initial_segments(plateau, motion_mask)
+                full_segments = [segments]
+            else: ## use tracking from previous groups
+                h0_new = grp_inputs[0]
+                h0_overlap = self.compute_overlap_h0(
+                    plateau, segments, h0_new)
+                plateau, segments, segments_new = self.group_tracked_inputs(
+                    segments, h0_overlap, *grp_inputs[1:-1], motion_mask)
+                full_segments.append(segments_new)
+
+        full_segments = torch.cat(full_segments, 1)
+        if self.target_model is not None:
+            target = self._get_target(full_segments, *grp_inputs)
+            return target
+        return (grp_inputs, plateau, segments, full_segments)
+
 class KpPrior(nn.Module):
     def __init__(self,
                  centroid_model,
@@ -559,29 +1316,46 @@ class KpPrior(nn.Module):
         return kp_prior
 
 if __name__ == '__main__':
-    args = get_args()
 
-    motion_params = {
-        'small': False,
+    eisen = load_model(model_class='eisen', load_path='./checkpoints/80000_eisen_teacher_v1_128_bs4.pth', ignore_prefix='student.',
+                       stem_pool=False,
+                       subsample_affinity=True,
+                       local_window_size=25,
+                       local_affinities_only=True,
+    )
+    # print(eisen)
+    print(sum([v.numel() for v in eisen.parameters()]))
+    eisen.cuda().eval()
 
-    }
-    boundary_params = {
-        'small': False,
-        'static_input': False,
-        'orientation_type': 'regression'
-    }
+    # args = get_args()
 
-    target_net = nn.DataParallel(MotionToStaticTeacher(
-        downsample_factor=4,
-        motion_path=args.motion_path,
-        motion_model_params=motion_params,
-        boundary_path=args.boundary_path,
-        boundary_model_params=boundary_params
-    ), device_ids=args.gpus)
-    target_net.eval()
+    # motion_params = {
+    #     'small': False,
 
-    for i in range(100):
-        img1 = torch.rand((1,3,512,512))
-        img2 = torch.rand((1,3,512,512))
-        target = target_net(img1.cuda(), img2.cuda())
-        print(target.shape, target.dtype, torch.unique(target))
+    # }
+    # boundary_params = {
+    #     'small': False,
+    #     'static_input': False,
+    #     'orientation_type': 'regression'
+    # }
+
+    # # target_net = nn.DataParallel(MotionToStaticTeacher(
+    # #     downsample_factor=4,
+    # #     motion_path=args.motion_path,
+    # #     motion_model_params=motion_params,
+    # #     boundary_path=args.boundary_path,
+    # #     boundary_model_params=boundary_params
+    # # ), device_ids=args.gpus)
+    # # target_net.eval()
+
+    # bbnet = BipartiteBootNet().cuda()
+    video = torch.rand(1,3,256,256) * 255.0
+    out, loss, segments = eisen(video.cuda(), to_image=True, local_window_size=15)
+    print("out", out.shape)
+    # out = bbnet(video)
+
+    # for i in range(100):
+    #     img1 = torch.rand((1,3,512,512))
+    #     img2 = torch.rand((1,3,512,512))
+    #     target = target_net(img1.cuda(), img2.cuda())
+    #     print(target.shape, target.dtype, torch.unique(target))
