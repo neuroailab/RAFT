@@ -1010,9 +1010,9 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         train_dataset = MoviFlowDataset(
             root=root,
             split=args.split,
-            sequence_length=(3 if args.model in ['motion', 'boundary', 'affinity', 'flow'] else 2),
+            sequence_length=(3 if args.model in ['motion', 'boundary', 'affinity', 'flow', 'flow_centroids'] else 2),
             delta_time=args.flow_gap,
-            passes=['images', 'objects', 'flow'],
+            passes=['images', 'objects'],
             min_start_frame=0,
             max_start_frame=None
         )

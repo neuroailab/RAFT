@@ -66,7 +66,7 @@ class EISEN(nn.Module):
         self.register_buffer("pixel_mean", torch.Tensor([123.675, 116.28, 103.53]).view(1, -1, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor([58.395, 57.12, 57.375]).view(1, -1, 1, 1), False)
 
-    def forward(self, img, segment_target=None, get_segments=False, to_image=False,
+    def forward(self, img, segment_target=None, get_segments=False, to_image=True,
                 local_window_size=None):
 
         """ build outputs at multiple levels"""
@@ -80,18 +80,14 @@ class EISEN(nn.Module):
         # Key & query projection
         key, query = self.key_query_proj(features)
 
-        print('key.shape: ', key.shape)
         B, C, H, W = key.shape
 
         # Sampling affinities
         sample_inds = self.generate_affinity_sample_indices(size=[B, H, W]) if self.sample_affinity else None
-        print("sample inds", sample_inds.shape)
 
         # Compute affinity logits
         affinity_logits = self.compute_affinity_logits(key, query, sample_inds)
         affinity_logits *= C ** -0.5
-
-        print('affinity.shape: ', affinity_logits.shape)
 
         # Compute affinity loss
         loss = 0.0
@@ -102,9 +98,6 @@ class EISEN(nn.Module):
         if get_segments:
             segments = self.compute_segments(affinity_logits, sample_inds)
 
-        if self.nonlinearity is not None:
-            affinity_logits = self.nonlinearity(affinity_logits)
-
         if local_window_size is not None:
             k = self.local_window_size
             k_out = local_window_size
@@ -113,6 +106,9 @@ class EISEN(nn.Module):
             affinity_logits = affinity_logits.view(B,H*W,k,k)
             affinity_logits = affinity_logits[:,:,p:-p,p:-p]
             affinity_logits = affinity_logits.reshape(B,H*W,k_out**2)
+
+        if self.nonlinearity is not None:
+            affinity_logits = self.nonlinearity(affinity_logits)
 
         if to_image:
             affinity_logits = affinity_logits.view(B,H,W,-1).permute(0,3,1,2)

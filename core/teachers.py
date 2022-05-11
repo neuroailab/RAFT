@@ -105,7 +105,11 @@ def load_model(load_path,
         args.__setattr__(k,v)
 
     # build model
-    model = cls(args, **kwargs)
+    if cls.__name__ == 'EISEN':
+        print("LOAD EISEN")
+        model = cls(args, **kwargs)
+    else:
+        model = cls(args)
     if load_path is not None:
         weight_dict = torch.load(load_path)
         new_dict = dict()
@@ -482,14 +486,18 @@ class StaticToMotionTeacher(nn.Module):
         'beta': 1.0
     }
     def __init__(self,
-                 local_strides=None,
+                 local_centroids=False,
+                 local_strides=[1,2,4,8],
                  target_motion_thresh=0.5,
                  centroid_model_params=DEFAULT_CENTROID_PARAMS,
                  target_model_params=DEFAULT_TARGET_PARAMS,
                  *args,
                  **kwargs):
         super().__init__()
-        self.local_strides = local_strides or []
+        if local_centroids:
+            self.local_strides = local_strides or []
+        else:
+            self.local_strides = []
         self.target_motion_thresh = target_motion_thresh
         self.centroid_target = self._build_centroid_target(
             copy.deepcopy(centroid_model_params))
@@ -588,7 +596,7 @@ class BipartiteBootNet(nn.Module):
         'target_boundary_thresh': 0.5
     }
     DEFAULT_GROUPING_PARAMS = {
-        'num_iters': 40,
+        'num_iters': 10,
         'radius_temporal': 3,
         'adj_temporal_thresh': None
     }
@@ -598,8 +606,11 @@ class BipartiteBootNet(nn.Module):
         'num_competition_rounds': 2,
         'selection_strength': 0
     }
+    DEFAULT_STATIC_TO_MOTION_PARAMS = {
+    }
     def __init__(self,
-                 training_mode='motion_to_static',
+                 student_model_type=None,
+                 target_model_params=DEFAULT_STATIC_TO_MOTION_PARAMS,
                  input_keys=DEFAULT_INPUTS,
                  dynamic_path=None,
                  dynamic_params={},
@@ -650,14 +661,15 @@ class BipartiteBootNet(nn.Module):
         self.T_track = tracking_step_size
 
         ## how to output a training target
-        self.training_mode = training_mode
+        self.student_model_type = student_model_type
+        self.build_target_model(target_model_params)
 
     @property
-    def training_mode(self):
-        return self._training_mode
-    @training_mode.setter
-    def training_mode(self, mode):
-        self._training_mode = mode
+    def student_model_type(self):
+        return self._student_model_type
+    @student_model_type.setter
+    def student_model_type(self, mode):
+        self._student_model_type = mode
 
     def _set_plateau_dimensions(
             self,
@@ -721,10 +733,15 @@ class BipartiteBootNet(nn.Module):
             self.static_model = GroundTruthGroupingTeacher(
                 downsample_factor=self.downsample_factor,
                 **params)
-        elif path is not None:
-            raise NotImplementedError("Need method for loading EISEN")
-        else:
+        elif path is None:
             self.static_model = None
+        elif 'eisen' in path:
+            self.static_model = load_model(model_class='eisen',
+                                           load_path=path,
+                                           ignore_prefix='student.',
+                                           parse_path=False,
+                                           local_affinities_only=True,
+                                           **params)
 
     def _load_centroid_model(self, path, params):
         if path is not None:
@@ -741,12 +758,27 @@ class BipartiteBootNet(nn.Module):
         self.num_competition_rounds = tracker.num_competition_rounds + 0
         return tracker
 
+    def build_target_model(self, target_model_params):
+        if self.student_model_type == 'flow_centroids':
+            self.target_model = StaticToMotionTeacher(
+                local_centroids=False,
+                **target_model_params)
+        elif self.student_model_type == 'flow':
+            self.target_model = StaticToMotionTeacher(
+                local_centroids=True,
+                **target_model_params)
+        else:
+            self.target_model = None
+
     @staticmethod
     def get_affinity_preds(net, img1, nonlinearity=None, **kwargs):
         if net is None:
             return None
         else:
-            return (nonlinearity or nn.Identity())(net(img1, **kwargs))
+            affinities = (nonlinearity or nn.Identity())(net(img1, **kwargs))
+            if isinstance(affinities, (list, tuple)):
+                affinities = affinities[0]
+            return affinities
 
     @staticmethod
     def get_centroid_preds(net, img1, nonlinearity=None):
@@ -849,7 +881,7 @@ class BipartiteBootNet(nn.Module):
         self.temporal_slices = [
             [t, t+self.T_group] for t in range(0, self.T - self.T_group + 1, self.T_track)
         ]
-        print("temporal slices", self.temporal_slices)
+        # print("temporal slices", self.temporal_slices)
 
     def compute_grouping_inputs(
             self,
@@ -889,7 +921,7 @@ class BipartiteBootNet(nn.Module):
             ## per-image outputs
             adj_space_t = self.get_affinity_preds(
                 self.static_model,
-                *_s_inp(t),
+                *[x.detach() for x in _s_inp(t)],
                 **static_params)
             h0_space_t = self.get_centroid_preds(
                 self.centroid_model, img1, **centroid_params)
@@ -920,7 +952,7 @@ class BipartiteBootNet(nn.Module):
             if (t+1) == (T-1):
                 adj_space_t = self.get_affinity_preds(
                     self.static_model,
-                    *_s_inp(t+1),
+                    *[x.detach() for x in _s_inp(t+1)],
                     **static_params)
 
                 boot_preds = self.get_boot_preds(
@@ -1086,10 +1118,25 @@ class BipartiteBootNet(nn.Module):
         return torch.unbind(
             self._get_input(video, model_key)[:,frame:frame+length], 1)
 
+    def _get_target(self,
+                    segments,
+                    h0,
+                    adj,
+                    activated,
+                    fwd_flow,
+                    bck_flow,
+                    motion_mask):
+        if self.student_model_type in ['flow', 'flow_centroids']:
+            target = self.target_model(segments, motion_mask)
+        else:
+            raise NotImplementedError("%s is not implemented as a training mode for BBNet" % self.student_model_type)
+        return target
+
     def forward(self, video,
                 stride=None,
                 grouping_window=None,
                 tracking_step_size=None,
+                mask_with_motion=False,
                 **kwargs
     ):
         """
@@ -1131,10 +1178,10 @@ class BipartiteBootNet(nn.Module):
         self._compute_temporal_slices()
         h0_overlap = None
         for window_idx, (ts, te) in enumerate(self.temporal_slices):
-            print(window_idx, (ts, te))
+            # print(window_idx, (ts, te))
             grp_inputs = self.compute_grouping_inputs(
                 self._get_all_inputs(video, ts, te), **kwargs)
-            if self.static_model is not None:
+            if (self.static_model is not None) and not mask_with_motion:
                 motion_mask = None
             else:
                 motion_mask = grp_inputs[-1]
@@ -1151,7 +1198,9 @@ class BipartiteBootNet(nn.Module):
                 full_segments.append(segments_new)
 
         full_segments = torch.cat(full_segments, 1)
-
+        if self.target_model is not None:
+            target = self._get_target(full_segments, *grp_inputs)
+            return target
         return (grp_inputs, plateau, segments, full_segments)
 
 class KpPrior(nn.Module):
