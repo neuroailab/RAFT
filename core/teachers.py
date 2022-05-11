@@ -488,6 +488,7 @@ class StaticToMotionTeacher(nn.Module):
                  local_centroids=False,
                  local_strides=[1,2,4,8],
                  target_motion_thresh=0.5,
+                 filter_motion=False,
                  centroid_model_params=DEFAULT_CENTROID_PARAMS,
                  target_model_params=DEFAULT_TARGET_PARAMS,
                  *args,
@@ -498,6 +499,7 @@ class StaticToMotionTeacher(nn.Module):
         else:
             self.local_strides = []
         self.target_motion_thresh = target_motion_thresh
+        self.filter_motion = filter_motion
         self.centroid_target = self._build_centroid_target(
             copy.deepcopy(centroid_model_params))
 
@@ -530,10 +532,22 @@ class StaticToMotionTeacher(nn.Module):
         self.BT = self.B*self.T
         return masks
 
+    def _filter_motion_with_masks(self, motion, masks):
+        num_px = masks.sum((-2,-1), True).clamp(min=1)
+        motion = motion.view(self.BT,1,self.H,self.W)
+        is_moving = (masks * motion).sum((-2,-1), True) / num_px
+        is_moving = (is_moving > self.target_motion_thresh).float() # [B,M,1,1]
+        moving_masks = (masks * is_moving) # [B,M,H,W]
+        motion = moving_masks.amax(1, True)
+        print("moving masks", moving_masks.shape)
+        return motion
+
     def forward(self, segments, motion):
         assert len(segments.shape) == 4, segments.shape
         assert segments.shape[1] == 2, segments.shape # two frames
         masks = self._segments_to_masks(segments)
+        if motion is not None and self.filter_motion:
+            motion = self._filter_motion_with_masks(motion, masks)
         if motion is not None:
             motion_mask = motion.view(self.BT,1,1,self.H,self.W)
         else:
