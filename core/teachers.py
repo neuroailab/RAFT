@@ -20,6 +20,7 @@ from core.utils.utils import softmax_max_norm
 import dorsalventral.models.layers as layers
 import dorsalventral.models.targets as targets
 import dorsalventral.models.fire_propagation as fprop
+import dorsalventral.models.segmentation.competition as competition
 
 import sys
 
@@ -1206,6 +1207,65 @@ class BipartiteBootNet(nn.Module):
         else:
             raise NotImplementedError("%s is not implemented as a training mode for BBNet" % self.student_model_type)
         return target
+
+    @staticmethod
+    def segments_to_masks(segments, min_area=None):
+
+        M = segments.amax().item() + 1
+        B,T,H,W = segments.shape
+        masks = F.one_hot(segments, num_classes=M)
+        if min_area is not None:
+            num_px = masks.sum((2,3), True)
+            area_mask = (num_px > min_area).float()
+            masks = masks * area_mask
+        return masks
+
+    @staticmethod
+    def stitch_segment_movies(segs1, segs2, overlap_window=1, min_area=None):
+        B,T1,H,W = segs1.shape
+        T2 = segs2.shape[1]
+        Toverlap = overlap_window
+        masks1 = BipartiteBootNet.segments_to_masks(
+            segs1[:,-Toverlap:], min_area=min_area)
+        masks2 = BipartiteBootNet.segments_to_masks(
+            segs2[:,:Toverlap], min_area=min_area)
+        ious = competition.compute_pairwise_overlaps(
+            masks1.view(B,Toverlap*H*W,-1),
+            masks2.view(B,Toverlap*H*W,-1)
+        )
+        print(masks1.shape, masks2.shape, ious.shape)
+
+        ## to be a match, iou, has to be at least 0.5
+        ## this guarantees that each mask in segs2 has
+        ## at most one "parent" in segs1.
+        best_ious, parents = ious.max(-2)
+
+        ## figure out new index assignments for segs2
+        new_segs = []
+        for b in range(B):
+            inds = torch.unique(segs2[b,:Toverlap])
+            n_segs = segs1[b,-Toverlap].amax() + 1
+            p_inds = parents[b]
+            b_ious = best_ious[b]
+            ## build a hash for the segments
+            start = inds.amax() + 1
+            new_segs_b = torch.zeros_like(segs2[b])
+            for n,i in enumerate(list(inds)):
+                b_iou = b_ious[i].item()
+                new_segs_b[segs2[b] == i] = p_inds[i] + start
+                # else:
+                #     new_segs_b[segs2[b] == i] = start + n_segs + n
+
+            new_segs_b -= start
+            new_segs.append(new_segs_b)
+
+        new_segs = torch.stack(new_segs, 0)
+        stitched = torch.cat([
+            segs1,
+            new_segs[:,Toverlap:]
+        ], 1)
+
+        return stitched
 
     def forward(self, video,
                 stride=None,
