@@ -1,4 +1,4 @@
-import os,sys
+import os,sys,json
 import argparse
 from collections import OrderedDict
 sys.path.append('core')
@@ -15,13 +15,25 @@ import dorsalventral.models.fire_propagation as fprop
 import dorsalventral.evaluation.object_metrics as metrics
 import kornia
 
+from tqdm import tqdm
+
+METRIC_NAMES = ['ari', 'fari', 'miou', 'recall50']
+DEFAULT_BBNET_PATHS = {
+    'motion_path': 'checkpoints/100000_motion-rnd1-movi_d-bs2-small-mt05-bt05-flit24-gs1-pretrained-0.pth',
+    'boundary_path': 'checkpoints/100000_boundaryMotionReg-rnd1-movi_d-bs2-small-mt05-bt05-flit24-gs1-pretrained-1.pth',
+    'flow_path': 'checkpoints/100000_flowBoundary-rnd1-movi_d-bs2-small-mt05-bt05-flit24-gs1-pretrained-1.pth',
+    'dynamic_path': None,
+    'static_path': None,
+    'centroid_path': None
+}
+
 def get_args(cmd=None):
     parser = argparse.ArgumentParser()
 
     ## BBNet component paths
-    parser.add_argument('--motion_path', type=str)
-    parser.add_argument('--boundary_path', type=str)
-    parser.add_argument('--flow_path', type=str)
+    parser.add_argument('--motion_path', type=str, default=DEFAULT_BBNET_PATHS['motion_path'])
+    parser.add_argument('--boundary_path', type=str, default=DEFAULT_BBNET_PATHS['boundary_path'])
+    parser.add_argument('--flow_path', type=str, default=DEFAULT_BBNET_PATHS['flow_path'])
     parser.add_argument('--dynamic_path', type=str)
     parser.add_argument('--static_path', type=str)
     parser.add_argument('--centroid_path', type=str)
@@ -47,11 +59,18 @@ def get_args(cmd=None):
 
     ## dataset
     parser.add_argument('--dataset', type=str, default='movi_d')
-    parser.add_argument('--dataset_dir', type=str, default='/data5/dbear/movi_datasets')
+    parser.add_argument('--dataset_dir', type=str, default='/data2/honglinc/')
     parser.add_argument('--split', type=str, default='validation')
     parser.add_argument('--seq_length', type=int, default=6, help="Length of video to evaluate on")
     parser.add_argument('--start_frame', type=int)
     parser.add_argument('--test_size', type=int, nargs='+')
+    parser.add_argument('--ex_start', type=int, default=0, help="Which example to start at")
+    parser.add_argument('--num_examples', type=int, default=1, help="How many examples to evaluate")
+
+    ## saving results
+    parser.add_argument('--out_dir', type=str, default='results/bbnet')
+    parser.add_argument('--outfile', type=str)
+    
 
     if cmd is None:
         args = parser.parse_args()
@@ -104,7 +123,7 @@ def fetch_dataset(args):
     print("dataset has %d examples" % len(dataset))
     return dataset
 
-def get_ari(pred, gt):
+def get_ari(pred, gt, ignore_background=True):
 
     size_pred = list(pred.shape[-2:])
     size_gt = list(gt.shape[-2:])
@@ -119,30 +138,82 @@ def get_ari(pred, gt):
         true_ids=gt,
         num_instances_pred=(pred + 1).amax().item() + 1,
         num_instances_true=gt.amax().item() + 1,
-        ignore_background=True
-    )
+        ignore_background=ignore_background
+    ).mean().cpu().item()
     return ari
 
+def save_results(args, results):
+    import pickle
+    outfile = args.outfile
+    if outfile[-4:] != '.pkl':
+        outfile += '.pkl'
+    if not os.path.exists(args.out_dir):
+        os.makedirs(args.out_dir)
+    outpath = os.path.join(args.out_dir, outfile)
+    with open(outpath, 'wb') as f:
+        pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+def aggregate_results(results):
+
+    examples = sorted(results.keys())
+    if len(examples) == 0:
+        return None
+
+    metric_names = results[examples[0]].keys()
+    agg = {nm:[] for nm in metric_names}
+
+    for ex in examples:
+        for nm in metric_names:
+            agg[nm].append(results[ex][nm])
+
+    for nm in metric_names:
+        if nm in METRIC_NAMES:
+            agg[nm+'_std'] = np.nanstd(np.array(agg[nm]))            
+            agg[nm] = np.nanmean(np.array(agg[nm]))
+            
+    return agg
+    
 def test(args):
 
     bbnet = load_bbnet(args)
     dataset = fetch_dataset(args)
     print("num parameters in model --- %d" % sum(p.numel() for p in bbnet.parameters()))
 
-    ex = 0
-    data = dataset[ex]
-    pred_segments = bbnet(
-        video=data['images'][None].cuda(),
-        boot_params={'bootstrap': args.bootstrap, 'flow_iters': args.flow_iters},
-        static_params={'to_image': True, 'local_window_size': None},
-        mask_with_motion=args.mask_with_motion
-    )
-    print("pred segments", pred_segments.shape)
-    gt_segments = data['objects'][None,:,0].long().cuda()
-    ari = get_ari(pred_segments, gt_segments)
+    ## loop over examples
+    ## TODO batching and parallelization across gpus
+    ex_start = args.ex_start
+    num_examples = args.num_examples
 
+    ## Since we can't randomly access examples with a tensorflow_dataset, just burn through
+    for ex in range(ex_start):
+        _ = dataset[ex]
+
+    ## actual eval loop
     results = OrderedDict()
-    print("ari", ari)
+    for ex in tqdm(range(ex_start, ex_start + num_examples)):
+        data = dataset[ex]
+        pred_segments = bbnet(
+            video=data['images'][None].cuda(),
+            boot_params={'bootstrap': args.bootstrap, 'flow_iters': args.flow_iters},
+            static_params={'to_image': True, 'local_window_size': None},
+            mask_with_motion=args.mask_with_motion
+        )
+        print("pred segments", pred_segments.shape)
+        gt_segments = data['objects'][None,:,0].long().cuda()
+
+
+        results[ex] = {
+            'example': ex,
+            'video_name': dataset.meta['video_name'],
+            'fari': get_ari(pred_segments, gt_segments, ignore_background=True),
+            'ari': get_ari(pred_segments, gt_segments, ignore_background=False)
+        }
+        print(ex, results[ex])
+
+    save_results(args, results)
+    agg_results = aggregate_results(results)
+    print(agg_results)
+    
 
 if __name__ == '__main__':
     torch.manual_seed(42)
