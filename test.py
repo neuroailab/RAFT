@@ -38,7 +38,7 @@ def get_args(cmd=None):
 
     ## call params
     parser.add_argument('--bootstrap', action='store_true')
-    parser.add_argument('--flow_iters', type=int, default=12, help="How many iters to run flow network")
+    parser.add_argument('--flow_iters', type=int, default=24, help="How many iters to run flow network")
     parser.add_argument('--mask_with_motion', action='store_true',
                         help="Whether to motion mask plateau map")
 
