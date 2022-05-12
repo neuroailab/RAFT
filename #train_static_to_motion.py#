@@ -575,8 +575,6 @@ def get_args(cmd=None):
         args = parser.parse_args(cmd)
     return args
 
-
-
 def load_model(load_path,
                model_class=None,
                small=False,

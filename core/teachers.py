@@ -840,6 +840,8 @@ class BipartiteBootNet(nn.Module):
         elif self.student_model_type == 'centroids':
             self.target_model = CentroidTeacher(
                 **target_model_params)
+        elif self.student_model_type == 'eisen':
+            self.target_model = nn.Identity(inplace=True)
         else:
             self.target_model = None
 
@@ -1204,6 +1206,8 @@ class BipartiteBootNet(nn.Module):
         elif self.student_model_type in ['centroids']:
             centroid_offsets, thingness = self.target_model(segments[:,0:1], motion_mask)
             target = (centroid_offsets, thingness)
+        elif self.student_model_type in ['eisen']:
+            target = segments
         else:
             raise NotImplementedError("%s is not implemented as a training mode for BBNet" % self.student_model_type)
         return target
