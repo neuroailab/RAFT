@@ -1001,6 +1001,9 @@ class BipartiteBootNet(nn.Module):
             h0_space_t = self.get_centroid_preds(
                 self.centroid_model, img1, **centroid_params)
 
+            if adj_space_t is not None:
+                print("adj space", adj_space_t.shape)
+
             ## per image-pair outputs
             if (self._dynamic_is_boot_model): # use bootnet to get all SKP inputs
                 boot_preds = self.get_boot_preds(

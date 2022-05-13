@@ -111,7 +111,7 @@ class EISEN(nn.Module):
             affinity_logits = self.nonlinearity(affinity_logits)
 
         if to_image:
-            affinity_logits = affinity_logits.view(B,H,W,-1).permute(0,3,1,2)
+            affinity_logits = affinity_logits.permute(0,2,1).reshape(B,-1,H,W)
 
         return affinity_logits, loss, segments
 

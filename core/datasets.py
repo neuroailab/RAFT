@@ -22,9 +22,9 @@ from utils import frame_utils
 from utils.augmentor import FlowAugmentor, SparseFlowAugmentor
 
 ## to wrap
-from dorsalventral.data.robonet import (RobonetDataset,
-                                        ROBONET_DIR,
-                                        get_robot_names)
+# from dorsalventral.data.robonet import (RobonetDataset,
+#                                         ROBONET_DIR,
+#                                         get_robot_names)
 from dorsalventral.data.davis import (DavisDataset,
                                       get_dataset_names)
 from dorsalventral.data.movi import MoviDataset
@@ -899,77 +899,77 @@ class MoviFlowDataset(MoviDataset):
 
         return (img1, img2, img0, segments)
 
-class RobonetFlowDataset(RobonetDataset):
+# class RobonetFlowDataset(RobonetDataset):
 
-    all_robots = get_robot_names()
-    def __init__(self,
-                 root=ROBONET_DIR,
-                 dataset_names=all_robots,
-                 sequence_length=2,
-                 *args, **kwargs):
-        if dataset_names is None:
-            dataset_names = self.all_robots
-        super().__init__(dataset_dir=root,
-                         dataset_names=dataset_names,
-                         sequence_length=sequence_length,
-                         *args, **kwargs)
+#     all_robots = get_robot_names()
+#     def __init__(self,
+#                  root=ROBONET_DIR,
+#                  dataset_names=all_robots,
+#                  sequence_length=2,
+#                  *args, **kwargs):
+#         if dataset_names is None:
+#             dataset_names = self.all_robots
+#         super().__init__(dataset_dir=root,
+#                          dataset_names=dataset_names,
+#                          sequence_length=sequence_length,
+#                          *args, **kwargs)
 
 
-    def __getitem__(self, idx):
+#     def __getitem__(self, idx):
 
-        data_dict = super().__getitem__(idx)
-        img1, img2 = data_dict['images'][:2].split([1,1], 0)
-        return img1[0].float(), img2[0].float()
+#         data_dict = super().__getitem__(idx)
+#         img1, img2 = data_dict['images'][:2].split([1,1], 0)
+#         return img1[0].float(), img2[0].float()
 
-    def get_video(self, f, frame_start = 0, num_frames = 2):
-        meta = self.meta_data_frame[self.meta_data_frame.index == Path(str(f.filename)).name]
-        video_length = int(meta['img_T'])
-        if (frame_start + num_frames) > video_length:
-            return None
-        video = self.get_movie(f, meta, frame=frame_start, num_frames=num_frames, transform={})
-        return list(video)
+#     def get_video(self, f, frame_start = 0, num_frames = 2):
+#         meta = self.meta_data_frame[self.meta_data_frame.index == Path(str(f.filename)).name]
+#         video_length = int(meta['img_T'])
+#         if (frame_start + num_frames) > video_length:
+#             return None
+#         video = self.get_movie(f, meta, frame=frame_start, num_frames=num_frames, transform={})
+#         return list(video)
 
-class DavisFlowDataset(DavisDataset):
+# class DavisFlowDataset(DavisDataset):
 
-    all_dataset_names = get_dataset_names()
-    def __init__(self,
-                 root='/data5/dbear/DAVIS2016',
-                 dataset_names=all_dataset_names,
-                 sequence_length=2,
-                 get_gt_flow=False,
-                 flow_gap=1,
-                 *args, **kwargs):
-        if dataset_names is None:
-            dataset_names = self.all_dataset_names
-        super().__init__(dataset_dir=root,
-                         dataset_names=dataset_names,
-                         sequence_length=sequence_length,
-                         to_tensor=True,
-                         get_flows=get_gt_flow,
-                         flow_gap=flow_gap,
-                         *args, **kwargs)
+#     all_dataset_names = get_dataset_names()
+#     def __init__(self,
+#                  root='/data5/dbear/DAVIS2016',
+#                  dataset_names=all_dataset_names,
+#                  sequence_length=2,
+#                  get_gt_flow=False,
+#                  flow_gap=1,
+#                  *args, **kwargs):
+#         if dataset_names is None:
+#             dataset_names = self.all_dataset_names
+#         super().__init__(dataset_dir=root,
+#                          dataset_names=dataset_names,
+#                          sequence_length=sequence_length,
+#                          to_tensor=True,
+#                          get_flows=get_gt_flow,
+#                          flow_gap=flow_gap,
+#                          *args, **kwargs)
 
-        ## center crop
-        size = self.resize_to or (1080, 1920)
-        crop_size = (8 * (size[0] // 8), 8 * (size[1] //  8))
-        if crop_size == size:
-            self.crop = nn.Identity()
-        else:
-            self.crop = transforms.CenterCrop(crop_size)
+#         ## center crop
+#         size = self.resize_to or (1080, 1920)
+#         crop_size = (8 * (size[0] // 8), 8 * (size[1] //  8))
+#         if crop_size == size:
+#             self.crop = nn.Identity()
+#         else:
+#             self.crop = transforms.CenterCrop(crop_size)
 
-    def __getitem__(self, idx):
-        data_dict = super().__getitem__(idx)
-        if 'segments' in data_dict.keys():
-            self.gt = self.crop(data_dict['segments'])
-        if 'flow_images' in data_dict.keys():
-            self.flow_images = self.crop(data_dict['flow_images'])
+#     def __getitem__(self, idx):
+#         data_dict = super().__getitem__(idx)
+#         if 'segments' in data_dict.keys():
+#             self.gt = self.crop(data_dict['segments'])
+#         if 'flow_images' in data_dict.keys():
+#             self.flow_images = self.crop(data_dict['flow_images'])
 
-        img1, img2 = [self.crop(im) for im in list(data_dict['images'][:2])]
-        if self.get_flows:
-            flow = self.crop(data_dict['flows'][0])
-            return img1.float(), img2.float(), flow
-        else:
-            return img1.float(), img2.float()
+#         img1, img2 = [self.crop(im) for im in list(data_dict['images'][:2])]
+#         if self.get_flows:
+#             flow = self.crop(data_dict['flows'][0])
+#             return img1.float(), img2.float(), flow
+#         else:
+#             return img1.float(), img2.float()
 
 def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
     """ Create the data loader for the corresponding trainign set """
@@ -1019,28 +1019,28 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
 
         print("training on %s with %d movies" % (args.stage, len(train_dataset.ds)))
 
-    elif args.stage == 'robonet':
-        print("dataset names", args.dataset_names)
-        train_dataset = RobonetFlowDataset(
-            root=ROBONET_DIR,
-            dataset_names=args.dataset_names,
-            sequence_length=2,
-            min_start_frame=0,
-            imsize=None,
-            train=True,
-            filter_imsize=args.image_size
-        )
+    # elif args.stage == 'robonet':
+    #     print("dataset names", args.dataset_names)
+    #     train_dataset = RobonetFlowDataset(
+    #         root=ROBONET_DIR,
+    #         dataset_names=args.dataset_names,
+    #         sequence_length=2,
+    #         min_start_frame=0,
+    #         imsize=None,
+    #         train=True,
+    #         filter_imsize=args.image_size
+    #     )
 
-    elif args.stage == 'davis':
-        print("dataset names", args.dataset_names)
-        train_dataset = DavisFlowDataset(
-            root='/data5/dbear/DAVIS2016',
-            dataset_names=None,
-            sequence_length=2,
-            split=args.train_split,
-            resize=args.image_size,
-            get_gt_flow=True,
-            flow_gap=args.flow_gap)
+    # elif args.stage == 'davis':
+    #     print("dataset names", args.dataset_names)
+    #     train_dataset = DavisFlowDataset(
+    #         root='/data5/dbear/DAVIS2016',
+    #         dataset_names=None,
+    #         sequence_length=2,
+    #         split=args.train_split,
+    #         resize=args.image_size,
+    #         get_gt_flow=True,
+    #         flow_gap=args.flow_gap)
 
     elif args.stage == 'chairs':
         if args.no_aug:

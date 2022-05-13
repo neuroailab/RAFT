@@ -17,7 +17,8 @@ import kornia
 
 from tqdm import tqdm
 
-METRIC_NAMES = ['ari', 'fari', 'miou', 'recall50']
+METRIC_NAMES = ['ari', 'fari', 'miou', 'recall50', 'recall75', 'recall90',
+                'miou_moving', 'miou_static', 'miou_background', 'recall50_moving', 'recall50_static']
 DEFAULT_BBNET_PATHS = {
     'motion_path': 'checkpoints/100000_motion-rnd1-movi_d-bs2-small-mt05-bt05-flit24-gs1-pretrained-0.pth',
     'boundary_path': 'checkpoints/100000_boundaryMotionReg-rnd1-movi_d-bs2-small-mt05-bt05-flit24-gs1-pretrained-1.pth',
@@ -64,12 +65,16 @@ def get_args(cmd=None):
     parser.add_argument('--seq_length', type=int, default=6, help="Length of video to evaluate on")
     parser.add_argument('--start_frame', type=int)
     parser.add_argument('--test_size', type=int, nargs='+')
+    parser.add_argument('--min_size', type=int, default=0, help="ignore gt segments less than this size")
     parser.add_argument('--ex_start', type=int, default=0, help="Which example to start at")
     parser.add_argument('--num_examples', type=int, default=1, help="How many examples to evaluate")
 
     ## saving results
     parser.add_argument('--out_dir', type=str, default='results/bbnet')
     parser.add_argument('--outfile', type=str)
+
+    ## examine results
+    parser.add_argument('--aggfile', type=str)
     
 
     if cmd is None:
@@ -142,6 +147,46 @@ def get_ari(pred, gt, ignore_background=True):
     ).mean().cpu().item()
     return ari
 
+def get_mious(pred, gt, motion=None, ignore_background=True, min_size=0):
+    size_pred = list(pred.shape[-2:])
+    size_gt = list(gt.shape[-2:])
+    if args.test_size is None:
+        pred = transforms.Resize(size_gt, interpolation=transforms.InterpolationMode.NEAREST)(pred)
+    else:
+        resize = transforms.Resize(args.test_size, interpolation=transforms.InterpolationMode.NEAREST)
+        pred, gt = resize(pred), resize(gt)
+        if motion is not None:
+            motion = resize(motion)
+
+    _, ious, _, gt_sizes = metrics.miou(pred, gt, ignore_background=ignore_background, min_size=min_size)
+    # ious are [B,Mgt] where Mgt is number of true masks
+    mious = {
+        'miou': ious.mean().cpu().item(),
+        'recall50': metrics.recall(ious, 0.5).mean().cpu().item(),
+        'recall75': metrics.recall(ious, 0.75).mean().cpu().item(),
+        'recall90': metrics.recall(ious, 0.90).mean().cpu().item()
+    }
+
+    # iou of background
+    miou_background, _, _, _ = metrics.miou(pred, (gt < 1).to(gt), ignore_background=True, min_size=0)
+    mious['miou_background'] = miou_background.mean().cpu().item()
+
+    # separate into static and moving
+    if motion is None:
+        return mious
+
+    moving_masks = (metrics.segments_to_masks(gt)[...,1:] * motion[:,:,0,...,None]).sum((1,2,3))
+    moving_inds = (moving_masks / gt_sizes.clamp(min=1)) > 0.1
+    ious = ious[None]
+    mious.update({
+        'miou_moving': ious[moving_inds].mean().cpu().item(),
+        'miou_static': ious[torch.logical_not(moving_inds)].mean().cpu().item(),
+        'recall50_moving': metrics.recall(ious[moving_inds], 0.5).mean().cpu().item(),
+        'recall50_static': metrics.recall(ious[torch.logical_not(moving_inds)], 0.5).mean().cpu().item()
+    })
+    return mious
+
+
 def save_results(args, results):
     import pickle
     outfile = args.outfile
@@ -201,13 +246,17 @@ def test(args):
         print("pred segments", pred_segments.shape)
         gt_segments = data['objects'][None,:,0].long().cuda()
 
-
         results[ex] = {
             'example': ex,
             'video_name': dataset.meta['video_name'],
             'fari': get_ari(pred_segments, gt_segments, ignore_background=True),
-            'ari': get_ari(pred_segments, gt_segments, ignore_background=False)
+            'ari': get_ari(pred_segments, gt_segments, ignore_background=False),
         }
+        moving = (data['flow'][None].cuda().square().sum(-3, True).sqrt() > 0.1).float()
+        results[ex].update(get_mious(pred_segments, gt_segments, moving,
+                                     ignore_background=True,
+                                     min_size=args.min_size))
+            
         print(ex, results[ex])
 
     save_results(args, results)
@@ -220,4 +269,10 @@ if __name__ == '__main__':
     np.random.seed(42)
 
     args = get_args()
-    test(args)
+    if args.aggfile is not None:
+        import pickle
+        with open(args.aggfile, 'rb') as f:
+            results = pickle.load(f)
+        print(aggregate_results(results))
+    else:
+        test(args)
