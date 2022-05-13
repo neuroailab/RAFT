@@ -47,6 +47,7 @@ except:
         def update(self):
             pass
 
+import dorsalventral.data.utils as utils
 
 # exclude extremly large displacements
 MAX_FLOW = 400
@@ -104,7 +105,7 @@ def sequence_loss(flow_preds, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, min_
     for i in range(n_predictions):
         i_weight = gamma**(n_predictions - i - 1)
         i_loss = loss_fn(flow_preds[i], flow_gt) * gt_weight
-        flow_loss += ((i_weight * valid * i_loss).sum((-2,-1)) / num_px).mean()
+        flow_loss += ((i_weight * valid[:, None] * i_loss).sum((-2,-1)) / num_px[:, None]).mean()
 
     # epe = torch.sum((flow_preds[-1] - flow_gt)**2, dim=1).sqrt()
     # epe = epe.view(-1)[valid.view(-1)]
@@ -469,6 +470,189 @@ def train(args):
 
     return PATH
 
+
+def train(args):
+
+    if args.model.lower() == 'bootraft':
+        model_cls = BootRaft
+        print("used BootRaft")
+    elif args.model.lower() == 'thingness' or args.model.lower() == 'occlusion':
+        model_cls = ThingsClassifier
+        print("used ThingnessClassifier")
+    elif args.model.lower() == 'centroid' or args.model.lower() == 'motion_centroid':
+        model_cls = CentroidRegressor
+        print("used CentroidRegressor")
+    elif args.model.lower() == 'motion':
+        model_cls = MotionClassifier
+        print("used MotionClassifier")
+    elif args.model.lower() == 'boundary':
+        model_cls = BoundaryClassifier
+        print("used BoundaryClassifier")
+    elif args.model.lower() in ['flow', 'flow_centroids']:
+        model_cls = RAFT
+        print("used RAFT for %s" % args.model.lower())
+    model = nn.DataParallel(model_cls(args), device_ids=args.gpus)
+    print("Parameter Count: %d" % count_parameters(model))
+    print("Using ground truth? %s" % args.supervised)
+
+    if args.restore_ckpt is not None:
+        did_load = model.load_state_dict(torch.load(args.restore_ckpt), strict=False)
+        print(did_load, type(model.module).__name__, args.restore_ckpt)
+
+    model.cuda()
+
+    if args.eval_only:
+        model.eval()
+    else:
+        model.train()
+
+    ## load a teacher model
+    stride = args.teacher_downsample_factor * args.downsample_factor
+    inp_size = {
+        'tdw': 512,
+        'movi_d': 256,
+        'movi_e': 256
+    }[args.stage]
+    target_net = nn.DataParallel(
+        teachers.BipartiteBootNet(
+            student_model_type=args.model.lower(),
+            static_path=args.static_ckpt,
+            static_params={
+                'stem_pool': (stride > 2),
+                'affinity_res': [inp_size // stride]*2
+            },
+            boot_paths={
+                'motion_path': args.motion_ckpt,
+                'boundary_path': args.boundary_ckpt,
+                'flow_path': args.flow_ckpt
+            },
+            downsample_factor=stride,
+            grouping_window=2,
+            static_resolution=args.static_resolution,
+            dynamic_resolution=args.dynamic_resolution
+        ),
+        device_ids=args.gpus
+    ).cuda().eval()
+
+    train_loader, epoch_size = datasets.fetch_dataloader(args)
+    optimizer, scheduler = fetch_optimizer(args, model)
+
+    total_steps = args.restore_step
+    scaler = GradScaler(enabled=args.mixed_precision)
+    logger = Logger(model, scheduler)
+
+    VAL_FREQ = args.val_freq
+    add_noise = True
+
+    should_keep_training = True
+    epoch = 0
+    while should_keep_training:
+        epoch += 1
+        for i_batch in range(epoch_size // args.batch_size):
+            import time
+            t1 = time.time()
+            try:
+                data_blob = iter(train_loader).next()
+            except StopIteration:
+                train_loader.dataset.reset_iterator()
+                data_blob = iter(train_loader).next()
+            except Exception as e:
+                print("skipping step %d due to %s" % (total_steps, e))
+                total_steps += 1
+                continue
+
+            optimizer.zero_grad()
+            image1, image2 = [x.cuda() for x in data_blob[:2]]
+            valid = None
+
+            flow_predictions = model(image1, image2, iters=args.iters)
+
+            ## get the self-supervision
+            teacher_inp = torch.stack([
+                image1, image2], 1)
+            targets = target_net(
+                video=teacher_inp,
+                boot_params={
+                    'motion_iters': args.motion_iters,
+                    'boundary_iters': args.boundary_iters,
+                    'flow_iters': args.flow_iters,
+                    'bootstrap': args.bootstrap
+                },
+                static_params={
+                    'local_window_size': args.affinity_kernel_size,
+                    'to_image': True
+                },
+                mask_with_motion=args.motion_mask_target
+            )
+            if args.model.lower() in ['flow', 'flow_centroids']:
+                target = targets
+
+            print("TARGET SHAPE", target.shape, args.model.lower())
+            if len(target.shape) == 5:
+                target = target.squeeze(1)
+
+            if args.eval_only:
+                target_rgb = utils.FlowToRgb()(targets)
+                plt.subplot(1, 2, 1)
+                plt.imshow(image1[0].permute(1, 2, 0).cpu() / 255.)
+                plt.axis('off')
+                plt.subplot(1, 2, 2)
+                plt.imshow(target_rgb[0, 0].permute(1, 2, 0).cpu())
+                plt.axis('off')
+                plt.show()
+                continue
+
+            ## compute loss
+            if args.model.lower() in ['centroid', 'motion_centroid']:
+                loss, metrics = centroid_loss(flow_predictions, target, valid, args.gamma, scale_to_pixels=args.scale_centroids, pixel_thresh=args.pixel_thresh)
+            elif args.use_motion_loss and args.model.lower() == 'motion':
+                loss, metrics = motion_loss(flow_predictions, target, valid, args.gamma, loss_scale=args.loss_scale)
+            elif args.model.lower() == 'boundary':
+                loss, metrics = boundary_loss(flow_predictions, target, valid, args.gamma, pixel_thresh=args.pixel_thresh)
+            else:
+                loss, metrics = sequence_loss(flow_predictions, target, valid, args.gamma, pos_weight=args.pos_weight, pixel_thresh=args.pixel_thresh)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+
+            scaler.step(optimizer)
+            scheduler.step()
+            scaler.update()
+
+            logger.push(epoch, i_batch + 1, metrics)
+
+            if total_steps % VAL_FREQ == VAL_FREQ - 1:
+                PATH = 'checkpoints/%d_%s.pth' % (total_steps+1, args.name)
+                torch.save(model.state_dict(), PATH)
+
+                results = {}
+                for val_dataset in args.validation:
+                    if val_dataset == 'chairs':
+                        results.update(evaluate.validate_chairs(model.module))
+                    elif val_dataset == 'sintel':
+                        results.update(evaluate.validate_sintel(model.module))
+                    elif val_dataset == 'kitti':
+                        results.update(evaluate.validate_kitti(model.module))
+
+                logger.write_dict(results)
+
+                model.train()
+                if args.stage in ['sintel']:
+                    model.module.freeze_bn()
+
+            total_steps += 1
+            t2 = time.time()
+            print("step time", i_batch, t2-t1)
+
+            if total_steps > args.num_steps:
+                should_keep_training = False
+                break
+
+    logger.close()
+    PATH = 'checkpoints/%s.pth' % args.name
+    torch.save(model.state_dict(), PATH)
+
+    return PATH
 def get_args(cmd=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', default='raft', help="name your experiment")
@@ -558,6 +742,7 @@ def get_args(cmd=None):
     parser.add_argument('--loss_scale', type=float, default=1.0)
 
     parser.add_argument('--scale_centroids', action='store_true')
+    parser.add_argument('--eval-only', action='store_true')
     parser.add_argument('--training_frames', help="a JSON file of frames to train from")
 
     if cmd is None:
