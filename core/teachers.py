@@ -21,6 +21,7 @@ import dorsalventral.models.layers as layers
 import dorsalventral.models.targets as targets
 import dorsalventral.models.fire_propagation as fprop
 import dorsalventral.models.segmentation.competition as competition
+import kornia
 
 import sys
 
@@ -667,8 +668,10 @@ class BipartiteBootNet(nn.Module):
     }
     DEFAULT_GROUPING_PARAMS = {
         'num_iters': 10,
+        'adj_temporal_thresh': None,
+        # 'num_iters': 40,
+        # 'adj_temporal_thresh': 0.5,                
         'radius_temporal': 3,
-        'adj_temporal_thresh': None
     }
     DEFAULT_TRACKING_PARAMS = {
         'num_masks': 32,
@@ -1144,7 +1147,7 @@ class BipartiteBootNet(nn.Module):
             activated[:,T_overlap:]], 1)
 
         plateau_new = self.Group(
-            *[x.detach() for x in [
+            *[self._detach(x) for x in [
                 h0, adj, activated, fwd_flow, bck_flow]],
             motion_mask.detach() if motion_mask is not None else None
         )
@@ -1274,11 +1277,64 @@ class BipartiteBootNet(nn.Module):
 
         return stitched
 
+    @staticmethod
+    def filter_segments_by_connected_components(
+            segments,
+            top_k=64,
+            min_area=25,
+            num_iterations=500,
+            invalid=-1,
+            **kwargs
+    ):
+        """
+        For each segment defined by a unique int id, mask out all its CCs
+        except for the largest top_k that have area above min_area
+
+        args:
+        segments: [B,T,H,W] <torch.int64>
+
+        returns:
+        filtered_segments: [B,T,H,W] <torch.int64> with filtered pixels set to -1
+        """
+        B,T,H,W = segments.shape
+        segments = segments.view(B*T,H,W)
+        masks = []
+        for i in range(B*T):
+            labels = torch.unique(segments[i]).view(-1,1,1)
+            masks_i = (segments[i][None] == labels).float()
+            ccs = kornia.contrib.connected_components(
+                masks_i[:,None], num_iterations=num_iterations)
+            _, ccs = torch.unique(ccs, return_inverse=True)
+            ccs -= ccs.min()
+            cc_areas = torch.bincount(ccs.long().flatten().cpu()).cuda()
+            num_ccs = cc_areas.shape[0]
+            valid = (cc_areas >= min_area)
+            if num_ccs < top_k:
+                selected_ccs = torch.arange(num_ccs).cuda()
+            else:
+                _, selected_ccs = torch.topk(cc_areas, k=top_k)
+                valid = valid[selected_ccs]
+
+            cc_mask = (ccs == selected_ccs.reshape(1,-1,1,1))
+            cc_mask = cc_mask * valid.reshape(1,-1,1,1)
+            cc_mask = cc_mask[:,1:].amax((0,1)).to(segments)
+            masks.append(cc_mask)
+            
+        masks = torch.stack(masks, 0).view(B,T,H,W)
+        return segments.view(B,T,H,W) * masks + invalid * (1 - masks) # invalid value
+
+    def _detach(self, x):
+        if x is None:
+            return None
+        return x.detach()
+
     def forward(self, video,
                 stride=None,
                 grouping_window=None,
                 tracking_step_size=None,
                 mask_with_motion=False,
+                use_temporal_affinities=True,
+                run_cc=False,
                 **kwargs
     ):
         """
@@ -1327,8 +1383,17 @@ class BipartiteBootNet(nn.Module):
                 motion_mask = None
             else:
                 motion_mask = grp_inputs[-1]
+
+            if use_temporal_affinities:
+                fwd_flow, bck_flow = [self._detach(x) for x in grp_inputs[3:5]]
+            else:
+                fwd_flow, bck_flow = None, None
             if window_idx == 0:
-                plateau = self.Group(*[x.detach() for x in grp_inputs])
+                plateau = self.Group(
+                    *[self._detach(x) for x in grp_inputs[:3]],
+                      fwd_flow,
+                      bck_flow,
+                      motion_mask)
                 segments = self.compute_initial_segments(plateau, motion_mask)
                 full_segments = [segments]
             else: ## use tracking from previous groups
@@ -1336,10 +1401,16 @@ class BipartiteBootNet(nn.Module):
                 h0_overlap = self.compute_overlap_h0(
                     plateau, segments, h0_new)
                 plateau, segments, segments_new = self.group_tracked_inputs(
-                    segments, h0_overlap, *grp_inputs[1:-1], motion_mask)
+                    segments, h0_overlap, *grp_inputs[1:-3],
+                    fwd_flow, bck_flow, motion_mask)
                 full_segments.append(segments_new)
 
         full_segments = torch.cat(full_segments, 1)
+
+        if run_cc:
+            full_segments = self.filter_segments_by_connected_components(
+                full_segments, **kwargs)
+            
         if self.target_model is not None:
             target = self._get_target(full_segments, *grp_inputs)
             return target

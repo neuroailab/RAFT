@@ -17,7 +17,7 @@ import kornia
 
 from tqdm import tqdm
 
-METRIC_NAMES = ['ari', 'fari', 'miou', 'recall50', 'recall75', 'recall90',
+METRIC_NAMES = ['ari', 'fari', 'miou', 'recall50', 'recall75', 'recall90', 'miou_above_min_size',
                 'miou_moving', 'miou_static', 'miou_background', 'recall50_moving', 'recall50_static']
 DEFAULT_BBNET_PATHS = {
     'motion_path': 'checkpoints/100000_motion-rnd1-movi_d-bs2-small-mt05-bt05-flit24-gs1-pretrained-0.pth',
@@ -47,10 +47,13 @@ def get_args(cmd=None):
     parser.add_argument('--stride', type=int, default=4, help="How much to spatially downsample")
     parser.add_argument('--tgroup', type=int, default=4, help="Length of sliding window for grouping")
     parser.add_argument('--ttrack', type=int, default=2, help="Step size for tracking")
+    parser.add_argument('--teval', type=int, default=None, help="How many of the frames to evaluate on")
     parser.add_argument('--affinity_size', type=int, nargs='+', help="Specify affinity size for EISEN")
 
     ## call params
     parser.add_argument('--bootstrap', action='store_true')
+    parser.add_argument('--no_temporal_affinities', action='store_true')
+    parser.add_argument('--connected_components', action='store_true')    
     parser.add_argument('--flow_iters', type=int, default=24, help="How many iters to run flow network")
     parser.add_argument('--mask_with_motion', action='store_true',
                         help="Whether to motion mask plateau map")
@@ -150,6 +153,8 @@ def get_ari(pred, gt, ignore_background=True):
 def get_mious(pred, gt, motion=None, ignore_background=True, min_size=0):
     size_pred = list(pred.shape[-2:])
     size_gt = list(gt.shape[-2:])
+    min_size = min_size * gt.shape[1]
+    print("min size", min_size)
     if args.test_size is None:
         pred = transforms.Resize(size_gt, interpolation=transforms.InterpolationMode.NEAREST)(pred)
     else:
@@ -158,9 +163,11 @@ def get_mious(pred, gt, motion=None, ignore_background=True, min_size=0):
         if motion is not None:
             motion = resize(motion)
 
-    _, ious, _, gt_sizes = metrics.miou(pred, gt, ignore_background=ignore_background, min_size=min_size)
+    _, ious, _, gt_sizes = metrics.miou(pred, gt, ignore_background=ignore_background, min_size=0)
+    miou_above_min_size = metrics.miou(pred, gt, ignore_background=ignore_background, min_size=min_size)[0]
     # ious are [B,Mgt] where Mgt is number of true masks
     mious = {
+        'miou_above_min_size': miou_above_min_size.mean().cpu().item(),
         'miou': ious.mean().cpu().item(),
         'recall50': metrics.recall(ious, 0.5).mean().cpu().item(),
         'recall75': metrics.recall(ious, 0.75).mean().cpu().item(),
@@ -175,7 +182,7 @@ def get_mious(pred, gt, motion=None, ignore_background=True, min_size=0):
     if motion is None:
         return mious
 
-    moving_masks = (metrics.segments_to_masks(gt)[...,1:] * motion[:,:,0,...,None]).sum((1,2,3))
+    moving_masks = (metrics.segments_to_masks(gt)[...,1:] * motion[...,None]).sum((1,2,3))
     moving_inds = (moving_masks / gt_sizes.clamp(min=1)) > 0.1
     ious = ious[None]
     mious.update({
@@ -241,10 +248,16 @@ def test(args):
             video=data['images'][None].cuda(),
             boot_params={'bootstrap': args.bootstrap, 'flow_iters': args.flow_iters},
             static_params={'to_image': True, 'local_window_size': None},
-            mask_with_motion=args.mask_with_motion
+            mask_with_motion=args.mask_with_motion,
+            use_temporal_affinities=(not args.no_temporal_affinities)
         )
-        print("pred segments", pred_segments.shape)
         gt_segments = data['objects'][None,:,0].long().cuda()
+
+        if args.teval is not None:
+            pred_segments = pred_segments[:,:args.teval]
+            gt_segments = gt_segments[:,:args.teval]
+
+        print("pred segments", pred_segments.shape)            
 
         results[ex] = {
             'example': ex,
@@ -252,7 +265,7 @@ def test(args):
             'fari': get_ari(pred_segments, gt_segments, ignore_background=True),
             'ari': get_ari(pred_segments, gt_segments, ignore_background=False),
         }
-        moving = (data['flow'][None].cuda().square().sum(-3, True).sqrt() > 0.1).float()
+        moving = (data['flow'][None].cuda().square().sum(-3).sqrt() > 0.1).float()
         results[ex].update(get_mious(pred_segments, gt_segments, moving,
                                      ignore_background=True,
                                      min_size=args.min_size))
