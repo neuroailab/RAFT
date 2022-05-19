@@ -11,6 +11,7 @@ from utils.utils import bilinear_sampler, coords_grid, upflow8
 
 ## fire propagation
 import dorsalventral.models.fire_propagation as prop
+import dorsalventral.models.layer_utils as layer_utils
 
 try:
     autocast = torch.cuda.amp.autocast
@@ -227,72 +228,22 @@ class MotionClassifier(RAFT):
         img1, img2 = args[:2]
         return super().forward(img1, img2, *args[2:], **kwargs, output_hidden=True)
 
-class MotionPropagator(RAFT):
-
+class SpatialAffinityDecoder(RAFT):
+    """A model for predicting static local affinities with a RAFT-like decoder"""
     def __init__(self, args):
         super().__init__(args)
-        self.r = args.affinity_radius
-        self.k = self.r*2 + 1
-        self.K = self.k**2
-        self.null_idx = (self.K - 1) // 2
-        self.classifier_head = FlowHead(
-            input_dim=self.hidden_dim,
-            out_dim=self.K)
+        self.affinity_radius = self.args.affinity_radius
+        self.kernel_size = self.affinity_radius*2 + 1
+        self.out_dim = self.kernel_size ** 2
+        self.nonlinearity = layer_utils.activation_func(self.args.nonlinearity)
 
-        if args.affinity_nonlinearity == 'softmax':
-            f = nn.Softmax(dim=-3)
-        elif args.affinity_nonlinearity == 'softmaxmax':
-            f = prop.utils.SoftmaxMax(dim=-3)
-        elif args.affinity_nonlinearity == 'sigmoid':
-            f = nn.Sigmoid()
-
-        # self.propagator = prop.FirePropagation(
-        #     thresh=args.motion_thresh,
-        #     target_thresh=args.target_thresh,
-        #     positive_thresh=args.positive_thresh,
-        #     negative_thresh=args.negative_thresh,
-        #     binarize_state=args.binarize_motion,
-        #     num_iters=args.num_propagation_iters,
-        #     num_sample_points=args.num_sample_points,
-        #     predict_every=args.predict_every,
-        #     motion_nonlinearity=torch.sigmoid,
-        #     affinity_nonlinearity=f,
-        #     affinity_nonlinearity_inference=None,
-        #     affinity_radius_inference=args.affinity_radius_inference
-        # )
-
-        self.propagator = prop.ChainPropagation()
-
-        ## load a pretrained classifier
-        args.corr_levels = args.corr_radius = 4
-        self.motion_model = nn.DataParallel(MotionClassifier(args),
-                                            device_ids=args.gpus)
-        if self.args.motion_ckpt is not None:
-            did_load = self.motion_model.load_state_dict(
-                torch.load(self.args.motion_ckpt), strict=False)
-            self.motion_model.eval()
-            self.motion_model.module.freeze_bn()
-            print("motion model", did_load)
-
-        self.static_affinities = args.static_affinities
-        print("static?", self.static_affinities)
+        self.classifier_head = FlowHead(input_dim=self.hidden_dim, out_dim=self.out_dim)
 
     def forward(self, *args, **kwargs):
         img1, img2 = args[:2]
-        motion = self.motion_model(img1, img2, *args[2:], **kwargs)[-1]
-        _img2 = img1 if self.static_affinities else img2
+        return super().forward(img1, img1, *args[2:], **kwargs, output_hidden=True)
+        
 
-        motion_affinities = super().forward(img1, _img2, *args[2:], **kwargs, output_hidden=True)[-1]
-        # motion, fire, preds = self.propagator(
-        #     x=motion,
-        #     A=motion_affinities
-        # )
+    
+        
 
-        preds = self.propagator(motion_affinities, target_input=motion)
-
-        # if kwargs.get('test_mode', False):
-        #     return motion_affinities, preds
-        # else:
-        #     return [preds]
-
-        return motion_affinities, preds

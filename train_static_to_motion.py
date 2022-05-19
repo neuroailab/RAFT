@@ -247,6 +247,13 @@ def centroids_loss(centroid_preds, target, valid, gamma=0.8):
 
     return loss, metrics
 
+def affinities_loss(affinity_preds, target, valid=None, gamma=0.8, loss_type='kl_div'):
+
+    B,H,W = target.shape
+    # if valid is None:
+    #     valid = 
+
+
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 

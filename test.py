@@ -249,7 +249,8 @@ def test(args):
             boot_params={'bootstrap': args.bootstrap, 'flow_iters': args.flow_iters},
             static_params={'to_image': True, 'local_window_size': None},
             mask_with_motion=args.mask_with_motion,
-            use_temporal_affinities=(not args.no_temporal_affinities)
+            use_temporal_affinities=(not args.no_temporal_affinities),
+            run_cc=args.connected_components
         )
         gt_segments = data['objects'][None,:,0].long().cuda()
 

@@ -843,8 +843,11 @@ class BipartiteBootNet(nn.Module):
         elif self.student_model_type == 'centroids':
             self.target_model = CentroidTeacher(
                 **target_model_params)
-        elif self.student_model_type == 'eisen':
-            self.target_model = nn.Identity(inplace=True)
+        elif self.student_model_type in ['eisen', 'affinities']:
+            self.target_model = fprop.SegmentsToAffinitiesTarget(
+                downsample_factor=self.downsample_factor,
+                **target_model_params
+            )
         else:
             self.target_model = None
 
@@ -1212,8 +1215,9 @@ class BipartiteBootNet(nn.Module):
         elif self.student_model_type in ['centroids']:
             centroid_offsets, thingness = self.target_model(segments[:,0:1], motion_mask)
             target = (centroid_offsets, thingness)
-        elif self.student_model_type in ['eisen']:
-            target = segments
+        elif self.student_model_type in ['eisen', 'affinities']:
+            connectivity_target, loss_mask = self.target_model(segments[:,0:1], motion_mask[:,0:1])
+            target = (connectivity_target, loss_mask)
         else:
             raise NotImplementedError("%s is not implemented as a training mode for BBNet" % self.student_model_type)
         return target
@@ -1317,7 +1321,10 @@ class BipartiteBootNet(nn.Module):
 
             cc_mask = (ccs == selected_ccs.reshape(1,-1,1,1))
             cc_mask = cc_mask * valid.reshape(1,-1,1,1)
-            cc_mask = cc_mask[:,1:].amax((0,1)).to(segments)
+            if cc_mask.shape[1] > 1:
+                cc_mask = cc_mask[:,1:].amax((0,1)).to(segments)
+            else:
+                cc_mask  = cc_mask.amax((0,1)).to(segments)
             masks.append(cc_mask)
             
         masks = torch.stack(masks, 0).view(B,T,H,W)
