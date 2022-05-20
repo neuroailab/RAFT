@@ -1002,7 +1002,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
 
     elif 'movi' in args.stage:
         root = os.path.join(
-            '/mnt/fs6/honglinc/dataset/tensorflow_datasets/',
+            args.dataset_dir,
             args.stage,
             '256x256' if args.image_size[0] > 128 else '128x128',
             '1.0.0'

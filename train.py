@@ -21,8 +21,9 @@ from raft import (RAFT,
                   ThingsClassifier,
                   CentroidRegressor,
                   MotionClassifier,
-                  BoundaryClassifier,
-                  MotionPropagator)
+                  BoundaryClassifier)
+
+
 
 from bootraft import (BootRaft,
                       CentroidMaskTarget,

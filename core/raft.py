@@ -235,7 +235,7 @@ class SpatialAffinityDecoder(RAFT):
         self.affinity_radius = self.args.affinity_radius
         self.kernel_size = self.affinity_radius*2 + 1
         self.out_dim = self.kernel_size ** 2
-        self.nonlinearity = layer_utils.activation_func(self.args.nonlinearity)
+        self.nonlinearity = layer_utils.activation_func(self.args.affinity_nonlinearity)
 
         self.classifier_head = FlowHead(input_dim=self.hidden_dim, out_dim=self.out_dim)
 

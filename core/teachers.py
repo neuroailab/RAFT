@@ -845,7 +845,7 @@ class BipartiteBootNet(nn.Module):
                 **target_model_params)
         elif self.student_model_type in ['eisen', 'affinities']:
             self.target_model = fprop.SegmentsToAffinitiesTarget(
-                downsample_factor=self.downsample_factor,
+                downsample_factor=1,
                 **target_model_params
             )
         else:
@@ -1219,7 +1219,8 @@ class BipartiteBootNet(nn.Module):
             connectivity_target, loss_mask = self.target_model(segments[:,0:1], motion_mask[:,0:1])
             target = (connectivity_target, loss_mask)
         else:
-            raise NotImplementedError("%s is not implemented as a training mode for BBNet" % self.student_model_type)
+            raise NotImplementedError("%s is not a known student model type" % self.student_model_type)
+
         return target
 
     @staticmethod

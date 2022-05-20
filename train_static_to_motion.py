@@ -21,11 +21,12 @@ from raft import (RAFT,
                   ThingsClassifier,
                   CentroidRegressor,
                   MotionClassifier,
-                  BoundaryClassifier)
+                  BoundaryClassifier,
+                  SpatialAffinityDecoder)
 from eisen import EISEN
 
 import teachers
-
+import core.utils.utils as utils
 import evaluate
 import datasets
 
@@ -247,11 +248,52 @@ def centroids_loss(centroid_preds, target, valid, gamma=0.8):
 
     return loss, metrics
 
-def affinities_loss(affinity_preds, target, valid=None, gamma=0.8, loss_type='kl_div'):
+def affinities_loss(affinity_preds, target, valid, gamma=0.8, loss_type='kl_div'):
 
-    B,H,W = target.shape
-    # if valid is None:
-    #     valid = 
+    B,K,H,W = affinity_preds[0].shape
+    assert target.shape[1] == K, target.shape
+    n_predictions = len(affinity_preds)
+    loss = 0.0
+
+    if list(target.shape[-2:]) != [H,W]:
+        _ds = lambda x: F.avg_pool2d(
+            x,
+            args.downsample_factor * args.teacher_downsample_factor,
+            stride=args.downsample_factor * args.teacher_downsample_factor)
+    else:
+        _ds = lambda x: x
+
+    if loss_type == 'binary_cross_entropy':
+        loss_cls = nn.BCEWithLogitsLoss(reduction='none')
+        loss_fn = lambda logits, labels: loss_cls(_ds(logits), labels)
+        radius = (int(np.sqrt(K)) - 1) // 2
+        loss_mask = utils.get_local_neighbors(
+            valid, radius=radius, invalid=0, to_image=True)[:,0]
+        loss_mask = torch.maximum(valid, loss_mask)
+        num_px = loss_mask.sum((-3,-2,-1)).clamp(min=1)
+    elif loss_type == 'kl_div':
+        raise NotImplementedError()
+
+    for i in range(n_predictions):
+        i_weight = gamma**(n_predictions - i - 1)
+        aff_pred = affinity_preds[i]
+        if loss_type == 'binary_cross_entropy':
+            i_loss = loss_fn(aff_pred, target) * loss_mask
+            i_loss = i_loss.sum((1,2,3)) / num_px
+            i_loss = i_loss.mean()
+        else:
+            raise NotImplementedError()
+
+        loss += i_loss * i_weight
+
+    metrics = {
+        'loss': loss
+    }
+    return loss, metrics
+
+        
+
+
 
 
 def count_parameters(model):
@@ -338,6 +380,9 @@ def train(args):
     elif args.model.lower() in ['flow', 'flow_centroids']:
         model_cls = RAFT
         print("used RAFT for %s" % args.model.lower())
+    elif args.model.lower() in ['affinities']:
+        model_cls = SpatialAffinityDecoder
+        print("used SpatialAffinityDecoder")        
     model = nn.DataParallel(model_cls(args), device_ids=args.gpus)
     print("Parameter Count: %d" % count_parameters(model))
 
@@ -430,6 +475,8 @@ def train(args):
                 target = targets
             elif args.model.lower() in ['centroids']:
                 target, valid = targets
+            elif args.model.lower() in ['affinities', 'eisen']:
+                target, valid = targets
 
             print("TARGET SHAPE", target.shape, args.model.lower())
             print("VALID SHAPE", (valid.shape if valid is not None else None))
@@ -441,6 +488,8 @@ def train(args):
                 loss, metrics = sequence_loss(flow_predictions, target, valid, args.gamma, pos_weight=args.pos_weight, pixel_thresh=args.pixel_thresh)
             elif args.model.lower() in ['thingness', 'centroids']:
                 loss, metrics = centroids_loss(flow_predictions, target, valid, args.gamma)
+            elif args.model.lower() in ['affinities', 'eisen']:
+                loss, metrics = affinities_loss(flow_predictions, target, valid, args.gamma, loss_type=args.affinity_loss_type)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
@@ -489,6 +538,7 @@ def get_args(cmd=None):
     parser.add_argument('--name', default='raft', help="name your experiment")
     parser.add_argument('--stage', default="chairs", help="determines which dataset to use for training")
     parser.add_argument('--split', type=str, default='train')
+    parser.add_argument('--dataset_dir', type=str, default='/data2/honglinc/')
     parser.add_argument('--dataset_names', type=str, nargs='+')
     parser.add_argument('--train_split', type=str, default='all')
     parser.add_argument('--flow_gap', type=int, default=1)
@@ -559,11 +609,10 @@ def get_args(cmd=None):
     parser.add_argument('--pixel_thresh', type=int, default=None)
     parser.add_argument('--positive_thresh', type=float, default=0.4)
     parser.add_argument('--negative_thresh', type=float, default=0.1)
-    parser.add_argument('--affinity_radius', type=int, default=1)
-    parser.add_argument('--affinity_radius_inference', type=int, default=1)
-    parser.add_argument('--static_affinities', action='store_true')
+    parser.add_argument('--affinity_radius', type=int, default=12)
+    parser.add_argument('--affinity_loss_type', type=str, default='kl_div')
     parser.add_argument('--static_input', action='store_true')
-    parser.add_argument('--affinity_nonlinearity', type=str, default='softmax')
+    parser.add_argument('--affinity_nonlinearity', type=str, default='sigmoid')
     parser.add_argument('--num_propagation_iters', type=int, default=200)
     parser.add_argument('--num_samples', type=int, default=8)
     parser.add_argument('--num_sample_points', type=int, default=2**14)

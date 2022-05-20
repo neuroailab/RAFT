@@ -227,3 +227,32 @@ def kl_divergence(logits, labels, logits_mode='log_softmax', labels_mode='row_su
     kl_div = F.kl_div(logits, labels, reduction='none')
 
     return kl_div.sum(-1) if reduce_sum else kl_div
+
+def get_local_neighbors(im, size=None, radius=3, invalid=-1, to_image=False):
+    shape = im.shape
+    if len(shape) == 2 and (size is not None):
+        B,N = shape
+        assert len(size) == 2, size
+        H,W = size
+        C = 1
+        assert N == H*W, (N, H, W, H*W)
+        im = im.view(B,1,H,W)
+    elif len(shape) == 3 and (size is not None):
+        B,C,N  = shape
+        assert len(size) == 2, size
+        H,W = size
+        assert N == H*W, (N, H, W, H*W)
+        im = im.view(B,C,H,W)
+    else:
+        assert len(shape) == 4 and ((size is None) or (size == list(shape[-2:]))), (shape, size)
+        B,C,H,W = shape
+
+    ## pad the input tensor
+    local_k = 2*radius + 1
+    out = F.pad(im, (radius, radius, radius, radius), "constant", invalid).float()
+    out = F.unfold(out, (local_k, local_k)).to(im)
+    if to_image:
+        out = out.view(B,C,-1,H,W)
+    else:
+        out = out.view(B,C,-1,H*W)
+    return out
