@@ -1536,6 +1536,106 @@ class KpPrior(nn.Module):
 
         return kp_prior
 
+class BootRNN(nn.Module):
+    DEFAULT_TARGET_PARAMS = {
+        'first_state': -7,
+        'last_state': None,
+        'target_state': -1,
+        'delta_thresh': 0.0,
+        'thresh_func': lambda dx,thr: (dx.amax(-1) > thr).float()
+    }
+    
+    def __init__(self,
+                 student_config={},
+                 teacher_config={},
+                 rnn_func=fprop.TopoNet,
+                 rnn_params={},
+                 teach_self=False,
+                 loss_scales={},
+                 target_params=DEFAULT_TARGET_PARAMS
+    ):
+        super(BootRNN, self).__init__()
+        self.teach_self = teach_self        
+        self._build_student_models(student_config)
+        self._build_teacher_models(teacher_config)
+        self.boot_rnn = rnn_func(**rnn_params)
+
+        ## training
+        self.loss_scales = loss_scales
+        self.target_params = copy.deepcopy(target_params)
+
+    def _build_student_models(self, config):
+        students = dict()
+        self.students = nn.ModuleDict(students)
+        
+    def _build_teacher_models(self, config):
+        teachers = dict()
+        self.teachers = nn.ModuleDict(teachers)
+        
+        ## freeze teacher parameters
+        if not self.teach_self:
+            self.teachers.requires_grad_(False)
+
+    def _get_rnn_inputs(self, video, params_dict={}):
+        inputs = dict()
+        for k in self.teachers.keys():
+            teacher = self.teachers.get(k, None)
+            if teacher is not None:
+                inputs[k] = teacher(video, **params_dict.get(k, {}))
+            else:
+                inputs[k] = None
+        return inputs
+
+    def compute_targets(self, **kwargs):
+        targets = dict()
+        for nm in self.students.keys():
+            target, mask = self.boot_rnn.get_target_and_mask(
+                target_name=nm, **kwargs)
+            targets[nm] = (target, mask)
+        return targets
+    
+    def _compute_losses(self):
+        if not self.training:
+            return
+
+        targets = self.compute_targets(**self.target_params)
+        self.losses = targets
+
+    @property
+    def loss(self):
+        return sum([v * self.loss_scales.get(k, 1.0) for k,v in self.losses.items()])
+    
+    def forward(self,
+                video,
+                rnn_params={},
+                **kwargs):
+
+        import time
+        t1 = time.time()
+        ## get the inputs to the bootnet
+        rnn_inputs = self._get_rnn_inputs(video)
+        for k,v in rnn_inputs:
+            print("inputs")
+            print(k, (v.shape if v is not None else None))
+
+        ## feed them into the bootnet
+        rnn_inputs.update(rnn_params)
+        rnn_outputs = self.boot_rnn(video, **rnn_inputs)
+
+        for v in rnn_outputs:
+            print("outputs")
+            print((v.shape if v is not None else None))
+
+        ## get the training targets
+        self.losses = {}
+        if self.training:
+            self._compute_losses()
+            
+        t2 = time.time()
+        print("run time", t2-t1)
+
+        return rnn_outputs
+
 if __name__ == '__main__':
 
     eisen = load_model(model_class='eisen', load_path='./checkpoints/80000_eisen_teacher_v1_128_bs4.pth', ignore_prefix='student.',
