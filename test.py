@@ -96,7 +96,7 @@ def load_bbnet(args):
     }
 
     bbnet = teachers.BipartiteBootNet(
-        student_model_type='eisen',
+        student_model_type=None,
         boot_paths={
             'motion_path': args.motion_path,
             'boundary_path': args.boundary_path,
@@ -252,6 +252,8 @@ def test(args):
             use_temporal_affinities=(not args.no_temporal_affinities),
             run_cc=args.connected_components
         )
+        if isinstance(pred_segments, (list, tuple)):
+            pred_segments = pred_segments[-1]
         gt_segments = data['objects'][None,:,0].long().cuda()
 
         if args.teval is not None:

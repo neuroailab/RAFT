@@ -890,8 +890,7 @@ class MoviFlowDataset(MoviDataset):
         if video.shape[0] == 3:
             img0 = video[0]
         elif self.is_test and (img0 is None):
-            minv, maxv = self.meta['forward_flow_range']
-            img0 = data['flow'][-2] / 65535 * (maxv - minv) + minv
+            img0 = data['flow'][-2]
 
         segments = data.get('objects', None)
         if segments is not None:
