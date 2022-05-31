@@ -83,7 +83,7 @@ def load_model(load_path,
             cls = CentroidRegressor
         elif 'motion' in name:
             cls = MotionClassifier
-        elif 'boundary' in name:
+        elif 'boundar' in name:
             cls = BoundaryClassifier
         elif 'flow' in name:
             cls = RAFT
@@ -127,8 +127,15 @@ def load_model(load_path,
 
         did_load = model.load_state_dict(new_dict, strict=False)
         print(did_load, type(model).__name__, load_path)
+    else:
+        print("created a new %s with %d parameters" % (
+            type(model).__name__,
+            sum([v.numel() for v in model.parameters()])))
 
     return model
+
+def load_model_from_config(path, **params):
+    pass
 
 class MotionToStaticTeacher(nn.Module):
     """
@@ -1544,6 +1551,27 @@ class BootRNN(nn.Module):
         'delta_thresh': 0.0,
         'thresh_func': lambda dx,thr: (dx.amax(-1) > thr).float()
     }
+    DEFAULT_MODELS = {
+        'motion': 'motion',
+        'boundaries': 'boundary',
+        'orientations': 'centroid',
+        'flow': None
+    }
+    DEFAULT_MODEL_PARAMS = {
+        'motion': {
+            'small': True,
+            'gate_stride': 1},
+        'boundaries': {
+            'small': True,
+            'gate_stride': 1,
+            'static_input': True,
+            'orientation_type': None},
+        'orientations': {
+            'small': True,
+            'gate_stride': 1,
+            'predict_mask': False,
+            'static_input': True}
+    }
     
     def __init__(self,
                  student_config={},
@@ -1566,7 +1594,22 @@ class BootRNN(nn.Module):
 
     def _build_student_models(self, config):
         students = dict()
+        for nm in ['motion', 'boundaries', 'orientations', 'flow']:
+            model_config = config.get(nm, {})
+            load_path = model_config.get('load_path', None)
+            model_func = model_config.get('model_func',
+                                          self.DEFAULT_MODELS[nm])
+            if model_func is None:
+                continue            
+            model_params = model_config.get('model_params',
+                                            self.DEFAULT_MODEL_PARAMS[nm])
+            student = load_model(load_path=load_path,
+                                 model_class=model_func,
+                                 **model_params)
+            students[nm] = student
+
         self.students = nn.ModuleDict(students)
+        self.students.train()
         
     def _build_teacher_models(self, config):
         teachers = dict()
@@ -1576,14 +1619,18 @@ class BootRNN(nn.Module):
         if not self.teach_self:
             self.teachers.requires_grad_(False)
 
-    def _get_rnn_inputs(self, video, params_dict={}):
+    def get_rnn_inputs(self, video, **kwargs):
+        assert video.dtype == torch.uint8, video.dtype
         inputs = dict()
-        for k in self.teachers.keys():
-            teacher = self.teachers.get(k, None)
-            if teacher is not None:
-                inputs[k] = teacher(video, **params_dict.get(k, {}))
-            else:
-                inputs[k] = None
+        img1, img2 = [x.float() for x in torch.unbind(video[:,-2:], dim=1)]
+        for nm, teacher in self.teachers.items():
+            teacher_kwargs = kwargs.get(nm+'_params',
+                                        {'iters': 24, 'test_mode': True})
+            teacher_pred = teacher(img1, img2, **teacher_kwargs)
+            if isinstance(teacher_pred, (list, tuple)):
+                teacher_pred = teacher_pred[-1]
+            inputs[nm] = teacher_pred
+
         return inputs
 
     def compute_targets(self, **kwargs):
@@ -1593,13 +1640,23 @@ class BootRNN(nn.Module):
                 target_name=nm, **kwargs)
             targets[nm] = (target, mask)
         return targets
+
+    def get_student_preds(self, video, **kwargs):
+
+        preds = dict()        
+        img1, img2 = [x.float() for x in torch.unbind(video[:,-2:], dim=1)]
+        for nm, student in self.students.items():
+            student_kwargs = kwargs.get(nm+'_params', {'iters': 12})
+            preds[nm] = student(img1, img2, **student_kwargs)
+        return preds
     
-    def _compute_losses(self):
+    def _compute_losses(self, video, student_params={}):
         if not self.training:
             return
 
         targets = self.compute_targets(**self.target_params)
-        self.losses = targets
+        preds = self.get_student_preds(video, **student_params)
+        self.losses = preds
 
     @property
     def loss(self):
@@ -1610,29 +1667,19 @@ class BootRNN(nn.Module):
                 rnn_params={},
                 **kwargs):
 
-        import time
-        t1 = time.time()
         ## get the inputs to the bootnet
-        rnn_inputs = self._get_rnn_inputs(video)
-        for k,v in rnn_inputs:
-            print("inputs")
-            print(k, (v.shape if v is not None else None))
+        rnn_inputs = self.get_rnn_inputs(video)
 
         ## feed them into the bootnet
         rnn_inputs.update(rnn_params)
         rnn_outputs = self.boot_rnn(video, **rnn_inputs)
 
-        for v in rnn_outputs:
-            print("outputs")
-            print((v.shape if v is not None else None))
-
         ## get the training targets
         self.losses = {}
         if self.training:
-            self._compute_losses()
-            
-        t2 = time.time()
-        print("run time", t2-t1)
+            preds = self.get_student_preds(video, **kwargs)
+            targets = self.compute_targets(**self.target_params)
+            return (preds, targets)
 
         return rnn_outputs
 

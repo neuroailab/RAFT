@@ -177,6 +177,8 @@ class BoundaryClassifier(RAFT):
             out_dim = 9
         elif out_type == 'combined':
             out_dim = 4
+        else:
+            out_dim = 1
 
         self.classifier_head = FlowHead(
             input_dim=self.hidden_dim, out_dim=out_dim)
