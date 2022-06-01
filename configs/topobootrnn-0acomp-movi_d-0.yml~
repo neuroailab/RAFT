@@ -1,0 +1,13 @@
+teacher_config:
+  load_step: 45000
+  load_path: checkpoints/topobootrnn-0acomp-movi_d-bs4-0
+  models:
+    motion: {}
+    boundaries: {}
+    orientations: {}
+student_config:
+  load_path: null
+  models:
+    motion: {}
+    boundaries: {}
+    orientations: {}    

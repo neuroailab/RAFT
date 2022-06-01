@@ -1,6 +1,6 @@
 from functools import partial
 from pathlib import Path
-import argparse
+import argparse, yaml
 import copy
 import numpy as np
 import torch
@@ -24,6 +24,7 @@ import dorsalventral.models.segmentation.competition as competition
 import kornia
 
 import sys
+from pathlib import Path
 
 CentroidMaskTarget = partial(targets.CentroidTarget, normalize=True, return_masks=True)
 ForegroundMaskTarget = partial(targets.MotionForegroundTarget, resolution=8, num_masks=32)
@@ -118,6 +119,8 @@ def load_model(load_path,
         for k in weight_dict.keys():
             if 'module' in k:
                 new_dict[k.split('module.')[-1]] = weight_dict[k]
+            else:
+                new_dict[k] = weight_dict[k]
 
         if ignore_prefix is not None:
             new_dict_1 = dict()
@@ -133,9 +136,6 @@ def load_model(load_path,
             sum([v.numel() for v in model.parameters()])))
 
     return model
-
-def load_model_from_config(path, **params):
-    pass
 
 class MotionToStaticTeacher(nn.Module):
     """
@@ -1560,6 +1560,7 @@ class BootRNN(nn.Module):
     DEFAULT_MODEL_PARAMS = {
         'motion': {
             'small': True,
+            'static_input': False,
             'gate_stride': 1},
         'boundaries': {
             'small': True,
@@ -1570,29 +1571,96 @@ class BootRNN(nn.Module):
             'small': True,
             'gate_stride': 1,
             'predict_mask': False,
-            'static_input': True}
+            'static_input': False}
+    }
+    DEFAULT_MODEL_NONLINEARITIES = {
+        'motion': 'sigmoid',
+        'boundaries': 'sigmoid',
+        'orientations': 'normalize',
+        'flow': None
+    }
+    DEFAULT_RNN_PARAMS = {
+        'num_iters': 10,
+        'diffusion_steps': 100,
+        'boundary_radius': 3,
+        'boundary_cone_thresh': 2.0,
+        'boundary_thresh': None,
+        'negative_flux': True,
+        'store_every': 1,
+        'store_from': 0
     }
     
     def __init__(self,
                  student_config={},
                  teacher_config={},
                  rnn_func=fprop.TopoNet,
-                 rnn_params={},
+                 rnn_params=DEFAULT_RNN_PARAMS,
                  teach_self=False,
                  loss_scales={},
-                 target_params=DEFAULT_TARGET_PARAMS
+                 target_params=DEFAULT_TARGET_PARAMS,
+                 nonlinearities=DEFAULT_MODEL_NONLINEARITIES,
+                 save_dir=None
     ):
         super(BootRNN, self).__init__()
-        self.teach_self = teach_self        
+        ## where to load and save component models to
+        self.save_dir = save_dir
+        
+        self.teach_self = teach_self
+        self._build_teacher_models(teacher_config)        
         self._build_student_models(student_config)
-        self._build_teacher_models(teacher_config)
+        self.nonlinearities = nn.ModuleDict(
+            {k: layers.activation_func(v) for k,v in nonlinearities.items()})
         self.boot_rnn = rnn_func(**rnn_params)
 
         ## training
         self.loss_scales = loss_scales
         self.target_params = copy.deepcopy(target_params)
 
+
+
+    def load_config(self, config_path):
+        with open(config_path, 'r') as f:
+            config_raw = yaml.safe_load(f)
+
+        config = dict()
+        
+        ## build model checkpoints
+        load_step = config_raw.get('load_step', None)
+        load_path = config_raw.get('load_path', None)
+        models = config_raw.get('models', {})
+
+        def _build_ckpt(load_path, step, model):
+            
+            load_path = Path(load_path)
+            parent, path = load_path.parent, load_path.name
+            out = path.split('.pth')[0]
+            if step is not None:
+                out = '_'.join([str(step), out])
+            if model is not None:
+                out = '_'.join([out, model])
+            out += '.pth'
+            out = parent / Path(out)
+            if self.save_dir is not None:
+                out = Path(self.save_dir) / out
+            return out
+
+        for nm, model_cfg in models.items():
+            config[nm] = {
+                'load_path': model_cfg.get('load_path', None) or _build_ckpt(load_path, load_step, nm),
+                'model_func': model_cfg.get('model_func', self.DEFAULT_MODELS[nm]),
+                'model_params': model_cfg.get('model_params', self.DEFAULT_MODEL_PARAMS[nm])
+            }
+        return config
+
     def _build_student_models(self, config):
+        if self.teach_self:
+            self.students = self.teachers
+            self.students.train()
+            return
+
+        if not hasattr(config, 'keys'):
+            config = self.load_config(config)
+        
         students = dict()
         for nm in ['motion', 'boundaries', 'orientations', 'flow']:
             model_config = config.get(nm, {})
@@ -1612,24 +1680,72 @@ class BootRNN(nn.Module):
         self.students.train()
         
     def _build_teacher_models(self, config):
-        teachers = dict()
-        self.teachers = nn.ModuleDict(teachers)
+        if not hasattr(config, 'keys'):
+            config = self.load_config(config)
         
-        ## freeze teacher parameters
+        teachers = dict()
+        for nm in ['motion', 'boundaries', 'orientations', 'flow']:
+            model_config = config.get(nm, None)
+            if model_config is None or not hasattr(model_config, 'keys'):
+                continue
+            load_path = model_config.get('load_path', None)
+            model_func = model_config.get('model_func',
+                                          self.DEFAULT_MODELS[nm])
+            model_params = model_config.get('model_params',
+                                            self.DEFAULT_MODEL_PARAMS[nm])
+            teacher = load_model(load_path=load_path,
+                                 model_class=model_func,
+                                 **model_params)
+            teachers[nm] = teacher
+            
+        self.teachers = nn.ModuleDict(teachers)
+        self.teachers.eval()
+        
+        ## freeze teacher paramters
         if not self.teach_self:
             self.teachers.requires_grad_(False)
+
+    @staticmethod
+    def apply_model_to_frames(net,
+                              video,
+                              num_frames=2,
+                              normalization=None,
+                              static_input=False,
+                              **kwargs):
+
+        frames = torch.unbind(video[:,-num_frames:], dim=1)
+        frames = [x.float() / (normalization or 1.0) for x in frames]
+        if not static_input:
+            out = net(*frames, **kwargs)
+            if isinstance(out, (list, tuple)):
+                out = [out[-1]]
+        elif static_input: # need separate outputs for forward and back
+            out_first = net(*([frames[0]] * num_frames), **kwargs)
+            if isinstance(out_first, (list, tuple)):
+                out_first = out_first[-1]            
+            out_last = net(*([frames[-1]] * num_frames), **kwargs)
+            if isinstance(out_last, (list, tuple)):
+                out_last = out_last[-1]                        
+            out = [out_first, out_last]
+        return out
 
     def get_rnn_inputs(self, video, **kwargs):
         assert video.dtype == torch.uint8, video.dtype
         inputs = dict()
-        img1, img2 = [x.float() for x in torch.unbind(video[:,-2:], dim=1)]
         for nm, teacher in self.teachers.items():
-            teacher_kwargs = kwargs.get(nm+'_params',
-                                        {'iters': 24, 'test_mode': True})
-            teacher_pred = teacher(img1, img2, **teacher_kwargs)
-            if isinstance(teacher_pred, (list, tuple)):
-                teacher_pred = teacher_pred[-1]
-            inputs[nm] = teacher_pred
+            teacher_kwargs = kwargs.get(
+                nm+'_params',
+                {'iters': 24, 'test_mode': True, 'static_input': False})
+            
+            teacher_pred = self.apply_model_to_frames(teacher, video, num_frames=2, **teacher_kwargs)
+            # apply nonlinearities to inputs
+            if nm in self.nonlinearities.keys():
+                teacher_pred = [self.nonlinearities[nm](y) for y in teacher_pred]
+
+            if len(teacher_pred) == 1:
+                inputs[nm] = teacher_pred[0]
+            elif len(teacher_pred) == 2:
+                inputs[nm] = F.relu(teacher_pred[0] - teacher_pred[1])
 
         return inputs
 

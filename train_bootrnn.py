@@ -3,6 +3,7 @@ import sys
 sys.path.append('core')
 
 import argparse
+import copy
 import os
 import cv2
 import time
@@ -336,10 +337,16 @@ class Logger:
 
 def train(args):
 
+    teacher_config = args.teacher_config or {}
+    if args.bootstrap:
+        student_config = teacher_config
+    else:
+        student_config = args.student_config or {}
+        
     model = nn.DataParallel(
         teachers.BootRNN(
-            student_config={},
-            teacher_config={}),
+            teacher_config=teacher_config,
+            student_config=student_config,
         device_ids=args.gpus)
     print("Parameter Count: %d" % count_parameters(model))
 
@@ -407,7 +414,9 @@ def train(args):
             if 'orientations' in preds.keys() and 'orientations' in targets.keys():
                 c_preds = preds['orientations']
                 c_target, _ = targets['orientations']
-                valid = targets['boundaries'][1] * targets['motion'][1]
+                # valid = targets['boundaries'][1] * targets['motion'][1]
+                valid = targets['boundaries'][0] * targets['motion'][0]
+                valid = valid * targets['boundaries'][1] * targets['motion'][1]
                 c_loss, c_metrics = sequence_loss(
                     c_preds, c_target, valid, args.gamma)
                 loss += c_loss
@@ -473,6 +482,8 @@ def get_args(cmd=None):
     parser.add_argument('--filepattern', type=str, default="*", help="which files to train on tdw")
     parser.add_argument('--test_filepattern', type=str, default="*9", help="which files to val on tdw")
     parser.add_argument('--restore_ckpt', help="restore checkpoint")
+    parser.add_argument('--teacher_config', type=str, default=None)
+    parser.add_argument('--student_config', type=str, default=None)        
     parser.add_argument('--small', action='store_true', help='use small model')
     parser.add_argument('--validation', type=str, nargs='+')
     parser.add_argument('--val_freq', type=int, default=5000, help='validation and checkpoint frequency')
