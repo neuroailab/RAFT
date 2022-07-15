@@ -346,7 +346,7 @@ def train(args):
     model = nn.DataParallel(
         teachers.BootRNN(
             teacher_config=teacher_config,
-            student_config=student_config,
+            student_config=student_config),
         device_ids=args.gpus)
     print("Parameter Count: %d" % count_parameters(model))
 

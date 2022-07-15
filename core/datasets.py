@@ -999,7 +999,7 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
             get_backward_frame=((args.model in ['motion','occlusion', 'thingness', 'boundary', 'flow']) and not args.supervised)
         )
 
-    elif 'movi' in args.stage:
+    elif 'movi' in args.stage and (args.video_length is None):
         root = os.path.join(
             args.dataset_dir,
             args.stage,
@@ -1017,6 +1017,23 @@ def fetch_dataloader(args, TRAIN_DS='C+T+K+S+H'):
         )
 
         print("training on %s with %d movies" % (args.stage, len(train_dataset.ds)))
+
+    elif 'movi' in args.stage and (args.video_length is not None):
+        dataset_dir = os.path.join(
+            args.dataset_dir,
+            args.stage,
+            '256x256',
+            '1.0.0'
+        )
+        train_dataset = MoviDataset(
+            dataset_dir=dataset_dir,
+            split=args.split,
+            passes=['images'],
+            sequence_length=args.video_length,
+            min_start_frame=0,
+            max_start_frame=None,
+            is_test=False)
+        print("training on %s with %d movies" % (args.stage, len(train_dataset.ds)))        
 
     # elif args.stage == 'robonet':
     #     print("dataset names", args.dataset_names)

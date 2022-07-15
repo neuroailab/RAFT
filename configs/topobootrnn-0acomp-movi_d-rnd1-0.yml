@@ -1,0 +1,6 @@
+load_step: 75000
+load_path: checkpoints/topobootrnn-0acomp-beta1it20_movi_d-bs4-rnd1-0
+models:
+  motion: {}
+  boundaries: {}
+  orientations: {}

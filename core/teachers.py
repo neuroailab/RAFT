@@ -1,6 +1,7 @@
 from functools import partial
 from pathlib import Path
-import argparse, yaml
+# import argparse, yaml
+import argparse
 import copy
 import numpy as np
 import torch
@@ -12,7 +13,10 @@ from raft import (RAFT,
                   CentroidRegressor,
                   ThingsClassifier,
                   MotionClassifier,
-                  BoundaryClassifier)
+                  BoundaryClassifier,
+                  GateClassifier,
+                  ConvClassifier,
+                  SpatialAffinityDecoder)
 
 from eisen import EISEN
 from core.utils.utils import softmax_max_norm
@@ -86,10 +90,16 @@ def load_model(load_path,
             cls = MotionClassifier
         elif 'boundar' in name:
             cls = BoundaryClassifier
+        elif 'gate' in name:
+            cls = GateClassifier
+        elif 'conv' in name:
+            cls = ConvClassifier            
         elif 'flow' in name:
             cls = RAFT
         elif 'eisen' in name:
             cls = EISEN
+        elif 'affinity' in name:
+            cls = SpatialAffinityDecoder
         else:
             raise ValueError("Couldn't identify a model class associated with %s" % name)
         return cls
@@ -1580,8 +1590,10 @@ class BootRNN(nn.Module):
         'flow': None
     }
     DEFAULT_RNN_PARAMS = {
-        'num_iters': 10,
-        'diffusion_steps': 100,
+        'num_iters': 20,
+        # 'diffusion_steps': 100,
+        'diffusion_steps': 250,        
+        'beta': 1.0,
         'boundary_radius': 3,
         'boundary_cone_thresh': 2.0,
         'boundary_thresh': None,

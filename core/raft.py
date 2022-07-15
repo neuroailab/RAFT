@@ -11,6 +11,7 @@ from utils.utils import bilinear_sampler, coords_grid, upflow8
 
 ## fire propagation
 import dorsalventral.models.fire_propagation as prop
+import dorsalventral.models.layers as layers
 import dorsalventral.models.layer_utils as layer_utils
 
 try:
@@ -177,21 +178,74 @@ class BoundaryClassifier(RAFT):
             out_dim = 9
         elif out_type == 'combined':
             out_dim = 4
+        elif hasattr(self.args, 'out_channels'):
+            out_dim = self.args.out_channels            
         else:
             out_dim = 1
 
         self.classifier_head = FlowHead(
             input_dim=self.hidden_dim, out_dim=out_dim)
         self.static_input = self.args.static_input
+        self.out_channels = out_dim
 
     def forward(self, *args, **kwargs):
-        img1, img2 = args[:2]
+        if len(args) == 1:
+            img1, img2 = args[0], args[0]
+        else:
+            img1, img2 = args[:2]
         out = super().forward(
             img1,
             img1 if self.static_input else img2,
             *args[2:], **kwargs, output_hidden=True
         )
         return out
+
+class GateClassifier(BoundaryClassifier):
+
+    def __init__(self, args):
+        args.orientation_type = None
+        assert hasattr(args, 'out_channels'), args
+        args.static_input = True
+        super(GateClassifier, self).__init__(args)
+
+        ## final classifier
+        self.gate_head = nn.Conv2d(self.out_channels, 1, kernel_size=1)
+
+    def forward(self, *args, get_features=False, **kwargs):
+
+        hidden = super().forward(*args, **kwargs)
+        if kwargs.get('test_mode', False):
+            up_mask, features = hidden
+            if get_features:
+                return (up_mask, features)
+            return (up_mask, self.gate_head(features))
+        else:
+            features_list = hidden
+            if get_features:
+                return features_list
+            return list(map(self.gate_head, features_list))
+
+class ConvClassifier(nn.Module):
+
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+
+        self.encoder = nn.Sequential(
+            layers.ResNetBasicBlock(
+                3, self.args.out_channels, stride=1, kernel_size=7, norm_fn='batch'),
+            layers.ResNetBasicBlock(
+                self.args.out_channels, self.args.out_channels, stride=1, kernel_size=3, norm_fn='batch')
+        )
+        self.decoder = nn.Conv2d(self.args.out_channels, 1 , kernel_size=1)
+
+    def forward(self, *args, get_features=False, test_mode=False, **kwargs):
+
+        x = args[0]
+        z = self.encoder(x)
+        if test_mode:
+            return (None, z if get_features else self.decoder(z))
+        return [z if get_features else self.decoder(z)]
 
 class CentroidRegressor(RAFT):
 
@@ -238,14 +292,17 @@ class SpatialAffinityDecoder(RAFT):
         self.kernel_size = self.affinity_radius*2 + 1
         self.out_dim = self.kernel_size ** 2
         self.nonlinearity = layer_utils.activation_func(self.args.affinity_nonlinearity)
+        self.static_input = self.args.static_input
 
         self.classifier_head = FlowHead(input_dim=self.hidden_dim, out_dim=self.out_dim)
 
     def forward(self, *args, **kwargs):
         img1, img2 = args[:2]
-        return super().forward(img1, img1, *args[2:], **kwargs, output_hidden=True)
+        return super().forward(
+            img1,
+            img1 if self.static_input else img2,
+            *args[2:], **kwargs, output_hidden=True)
         
-
     
         
 
